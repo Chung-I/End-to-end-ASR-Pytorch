@@ -5,8 +5,9 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Dataset
-from src.preprocess import zero_padding,target_padding
+from src.preprocess import zero_padding,target_padding,extract_feature
 import pandas as pd
+import random
 
 # TODO : Move this to config
 HALF_BATCHSIZE_TIME=800
@@ -116,6 +117,64 @@ class LibriDataset(Dataset):
         return len(self.Y)
 
 
+class DramaDataset(Dataset):
+    def __init__(self, file_path, sets,
+                 max_timestep=0, max_label_len=0, drop=False,
+                 text_only=False):
+        # Read file
+        self.speeds = [0.9, 1.0, 1.1]
+        from collections import Counter
+        self.root = file_path
+        self.max_timestep = max_timestep
+        self.max_label_len = max_label_len
+        srcf, tgtf = sets
+        srcf = os.path.join(self.root, srcf)
+        tgtf = os.path.join(self.root, tgtf)
+
+        with open(srcf) as f:
+            self.X = f.read().splitlines()
+
+        self.id2word = ['<sos>', '<eos>', '<unk>']
+        with open(tgtf) as f:
+            self.Y = f.read().splitlines()
+
+        c = Counter(''.join(self.Y))
+        del c[' ']
+        self.id2word += [word for word, _ in c.most_common()]
+        self.word2id = {word: idx for idx, word in enumerate(self.id2word)}
+        self.unk_idx = self.word2id['<unk>']
+        vocab_path = os.path.join(self.root, 'mapping.pkl')
+        with open(vocab_path, "wb") as fp:
+            pickle.dump(self.word2id, fp)
+
+    
+    @staticmethod
+    def collate_fn(samples):
+        xs, ys = list(zip(*samples))
+        ys = target_padding(ys, max([len(y) for y in ys]))
+        xs = pad_sequence(xs, batch_first=True)
+        xs = xs.unsqueeze(0)
+        ys = torch.from_numpy(ys)
+        ys = ys.unsqueeze(0)
+        return xs, ys
+
+    def __getitem__(self, index):
+        # Load label
+        audio_f = os.path.join(self.root, self.X[index])
+        speed = random.choice(self.speeds)
+        x = extract_feature(audio_f, dim=80, delta=True, delta_delta=True,speed=speed)
+        x = torch.from_numpy(x)
+
+        y = self.Y[index]
+        y = [self.word2id.get(word, self.unk_idx) for word in y.split()]
+
+        return x,y
+            
+    
+    def __len__(self):
+        return len(self.Y)
+
+
 def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label_len, use_gpu, n_jobs,
                 dataset, train_set, dev_set, test_set, dev_batch_size, decode_beam_size,**kwargs):
     if split=='train':
@@ -149,9 +208,19 @@ def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label
     elif dataset.upper() =="LIBRISPEECH":
         ds = LibriDataset(file_path=data_path, sets=sets, max_timestep=max_timestep,text_only=text_only,
                            max_label_len=max_label_len, bucket_size=bs,drop=drop_too_long)
+    elif dataset.upper() == "TSMDRAMA":
+        collate_fn = DramaDataset.collate_fn
+        ds = DramaDataset(file_path=data_path, sets=sets,max_timestep=max_timestep,
+                          text_only=text_only,max_label_len=max_label_len,
+                          drop=drop_too_long)
+        return DataLoader(ds, batch_size=bs,shuffle=shuffle,drop_last=False,
+                          num_workers=n_jobs,collate_fn=DramaDataset.collate_fn,
+                          pin_memory=use_gpu)
     else:
         raise ValueError('Unsupported Dataset: '+dataset)
 
     return  DataLoader(ds, batch_size=1,shuffle=shuffle,drop_last=False,num_workers=n_jobs,pin_memory=use_gpu)
 
 
+if __name__ == '__main__':
+    DramaDataset(file_path='/media/zhong-yi/DATA1/all', sets=['src-train.txt', 'tgt-train.txt'])

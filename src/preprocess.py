@@ -19,8 +19,10 @@ warnings.filterwarnings("ignore")
 # Return
 #     acoustic features with shape (time step, dim)
 def extract_feature(input_file,feature='fbank',dim=40, cmvn=True, delta=False, delta_delta=False,
-                    window_size=25, stride=10,save_feature=None):
+                    window_size=25, stride=10,save_feature=None, speed=1.0):
     y, sr = librosa.load(input_file,sr=None)
+    if speed != 1.0:
+        y = librosa.core.resample(y, sr, sr * speed)
     ws = int(sr*0.001*window_size)
     st = int(sr*0.001*stride)
     if feature == 'fbank': # log-scaled
