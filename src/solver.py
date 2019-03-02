@@ -190,11 +190,11 @@ class Trainer(Solver):
                                    {'train':cal_cer(att_pred,label,mapper=self.mapper)})
 
                 # Validation
+                self.step+=1
                 if self.step%self.valid_step == 0:
                     self.asr_opt.zero_grad()
                     self.valid()
 
-                self.step+=1
                 if self.step > self.max_step:break
     
 
