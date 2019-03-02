@@ -469,6 +469,7 @@ class RNNLayer(nn.Module):
         super(RNNLayer, self).__init__()
         self.sample_style = sample_style
         self.sample_rate = sample_rate
+        self.dropout = nn.Dropout(dropout_rate)
         
         self.layer = getattr(nn,rnn_cell.upper())(in_dim,out_dim, bidirectional=bidir, num_layers=layers,
                                dropout=dropout_rate,batch_first=True)
@@ -479,9 +480,12 @@ class RNNLayer(nn.Module):
             assert state_len is not None, "Please specify seq len for pack_padded_sequence."
             input_x = pack_padded_sequence(input_x, state_len, batch_first=True)
         output,hidden = self.layer(input_x,state)
+
         if pack_input:
             output,state_len = pad_packed_sequence(output,batch_first=True)
             state_len = state_len.tolist()
+        output = self.dropout(output)
+
 
         # Perform Downsampling
         if self.sample_rate > 1:
