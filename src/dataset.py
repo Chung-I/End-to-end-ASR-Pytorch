@@ -120,10 +120,12 @@ class LibriDataset(Dataset):
 class DramaDataset(Dataset):
     def __init__(self, file_path, sets,
                  max_timestep=0, max_label_len=0, drop=False,
-                 text_only=False):
+                 text_only=False, speed=False):
         # Read file
-        self.speeds = [0.9, 1.0, 1.1]
-        from collections import Counter
+        self.speeds = [1.0]
+        if speed:
+            self.speeds = [0.9, 1.0, 1.1]
+        #from collections import Counter
         self.root = file_path
         self.max_timestep = max_timestep
         self.max_label_len = max_label_len
@@ -138,21 +140,28 @@ class DramaDataset(Dataset):
         with open(tgtf) as f:
             self.Y = f.read().splitlines()
 
-        c = Counter(''.join(self.Y))
-        del c[' ']
-        self.id2word += [word for word, _ in c.most_common()]
-        self.word2id = {word: idx for idx, word in enumerate(self.id2word)}
-        self.unk_idx = self.word2id['<unk>']
-        vocab_path = os.path.join(self.root, 'mapping.pkl')
-        with open(vocab_path, "wb") as fp:
-            pickle.dump(self.word2id, fp)
+        if speed:
+            self.X, self.Y = list(zip(*sorted(zip(self.X, self.Y), key=lambda pair: len(pair[1]))))
 
-    
+        #c = Counter(''.join(self.Y))
+        #del c[' ']
+        #self.id2word += [word for word, _ in c.most_common()]
+        #self.word2id = {word: idx for idx, word in enumerate(self.id2word)}
+        with open(os.path.join(self.root, 'mapping.pkl'), 'rb') as fp:
+            self.word2id = pickle.load(fp)
+        self.sos_idx = self.word2id['<sos>']
+        self.eos_idx = self.word2id['<eos>']
+        self.unk_idx = self.word2id['<unk>']
+        #vocab_path = os.path.join(self.root, 'mapping.pkl')
+        #with open(vocab_path, "wb") as fp:
+        #    pickle.dump(self.word2id, fp)
+
     @staticmethod
     def collate_fn(samples):
         xs, ys = list(zip(*samples))
-        ys = target_padding(ys, max([len(y) for y in ys]))
+        xs, ys = list(zip(*sorted(zip(xs, ys), key=lambda pair: -pair[0].size(0))))
         xs = pad_sequence(xs, batch_first=True)
+        ys = target_padding(ys, max([len(y) for y in ys]))
         xs = xs.unsqueeze(0)
         ys = torch.from_numpy(ys)
         ys = ys.unsqueeze(0)
@@ -162,11 +171,11 @@ class DramaDataset(Dataset):
         # Load label
         audio_f = os.path.join(self.root, self.X[index])
         speed = random.choice(self.speeds)
-        x = extract_feature(audio_f, dim=80, delta=True, delta_delta=True,speed=speed)
+        x = extract_feature(audio_f, dim=40, delta=True, delta_delta=True,speed=speed)
         x = torch.from_numpy(x)
 
         y = self.Y[index]
-        y = [self.word2id.get(word, self.unk_idx) for word in y.split()]
+        y = [self.sos_idx] + [self.word2id.get(word, self.unk_idx) for word in y.split()] + [self.eos_idx]
 
         return x,y
             
@@ -177,6 +186,7 @@ class DramaDataset(Dataset):
 
 def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label_len, use_gpu, n_jobs,
                 dataset, train_set, dev_set, test_set, dev_batch_size, decode_beam_size,**kwargs):
+    speed = False
     if split=='train':
         bs = batch_size
         shuffle = True
@@ -212,7 +222,13 @@ def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label
         collate_fn = DramaDataset.collate_fn
         ds = DramaDataset(file_path=data_path, sets=sets,max_timestep=max_timestep,
                           text_only=text_only,max_label_len=max_label_len,
-                          drop=drop_too_long)
+                          drop=drop_too_long, speed=speed)
+        if shuffle:
+            from src.sampler import BatchBucketSampler
+            sampler = BatchBucketSampler(len(ds), bs * 2, bs, drop_last=False)
+            return DataLoader(ds, batch_sampler=sampler,
+                              num_workers=n_jobs,collate_fn=DramaDataset.collate_fn,
+                              pin_memory=use_gpu)
         return DataLoader(ds, batch_size=bs,shuffle=shuffle,drop_last=False,
                           num_workers=n_jobs,collate_fn=DramaDataset.collate_fn,
                           pin_memory=use_gpu)
