@@ -14,6 +14,10 @@ from src.clm import CLM_wrapper
 from src.dataset import LoadDataset
 from src.postprocess import Mapper,cal_acc,cal_cer,draw_att
 
+def is_monotonic(l, incr=False):
+    op = (lambda x,y: x <= y) if incr else (lambda x, y: x >= y)
+    return all(op(l[i], l[i+1]) for i in range(len(l)-1))
+
 
 VAL_STEP = 30        # Additional Inference Timesteps to run during validation (to calculate CER)
 TRAIN_WER_STEP = 250 # steps for debugging info.
@@ -133,6 +137,14 @@ class Trainer(Solver):
                 y = y.squeeze(0).to(device = self.device,dtype=torch.long)
                 state_len = np.sum(np.sum(x.cpu().data.numpy(),axis=-1)!=0,axis=-1)
                 state_len = [int(sl) for sl in state_len]
+                if not is_monotonic(state_len):
+                    print('state_len is not decreasing, skipping')
+                    print(state_len)
+                    continue
+                if 0 in state_len:
+                    print('state_len contains 0, skipping')
+                    print(state_len)
+                    continue
                 ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
 
                 # ASR forwarding 
@@ -152,16 +164,16 @@ class Trainer(Solver):
                     att_loss = torch.sum(att_loss.view(b,t),dim=-1)/torch.sum(y!=0,dim=-1)\
                                .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
                     att_loss = torch.mean(att_loss) # Mean by batch
-                    loss_log['train_att'] = att_loss
+                    loss_log['train_att'] = att_loss.detach()
 
                 # CTC loss on CTC decoder
                 if self.ctc_weight>0:
                     target_len = torch.sum(y!=0,dim=-1)
                     ctc_loss = self.ctc_loss( F.log_softmax( ctc_pred.transpose(0,1),dim=-1), label, torch.LongTensor(state_len), target_len)
-                    loss_log['train_ctc'] = ctc_loss
+                    loss_log['train_ctc'] = ctc_loss.detach()
                 
                 asr_loss = (1-self.ctc_weight)*att_loss+self.ctc_weight*ctc_loss
-                loss_log['train_full'] = asr_loss
+                loss_log['train_full'] = asr_loss.detach()
                 
                 # Adversarial loss from CLM
                 if self.apply_clm and att_pred.shape[1]>=CLM_MIN_SEQ_LEN:
@@ -181,19 +193,23 @@ class Trainer(Solver):
                 else:
                     self.asr_opt.step()
                 
+                att_pred.detach_()
+                label.detach_()
                 # Logger
                 self.write_log('loss',loss_log)
                 if self.ctc_weight<1:
                     self.write_log('acc',{'train':cal_acc(att_pred,label)})
                 if self.step % TRAIN_WER_STEP ==0:
                     self.write_log('error rate',
-                                   {'train':cal_cer(att_pred,label,mapper=self.mapper)})
+                                   {'train':cal_cer(att_pred,label,
+                                       mapper=self.mapper)})
 
                 # Validation
                 self.step+=1
                 if self.step%self.valid_step == 0:
                     self.asr_opt.zero_grad()
-                    self.valid()
+                    with torch.no_grad():
+                        self.valid()
 
                 if self.step > self.max_step:break
     
@@ -241,11 +257,13 @@ class Trainer(Solver):
                            .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
                 seq_loss = torch.mean(seq_loss) # Mean by batch
                 val_att += seq_loss.detach()*int(x.shape[0])
-                t1,t2 = cal_cer(att_pred,label,mapper=self.mapper,get_sentence=True)
+                t1,t2 = cal_cer(att_pred,label,
+                        mapper=self.mapper,get_sentence=True)
                 all_pred += t1
                 all_true += t2
                 val_acc += cal_acc(att_pred,label)*int(x.shape[0])
-                val_cer += cal_cer(att_pred,label,mapper=self.mapper)*int(x.shape[0])
+                val_cer += cal_cer(att_pred,label,
+                        mapper=self.mapper)*int(x.shape[0])
             
             # Compute CTC loss
             if self.ctc_weight>0:
@@ -255,6 +273,12 @@ class Trainer(Solver):
                 val_ctc += ctc_loss.detach()*int(x.shape[0])
 
             val_len += int(x.shape[0])
+
+            if cur_b < len(self.dev_set) - 1:
+                del att_pred
+                del label
+                del ctc_pred
+                del att_maps
         
         # Logger
         val_loss = (1-self.ctc_weight)*val_att + self.ctc_weight*val_ctc
@@ -265,7 +289,8 @@ class Trainer(Solver):
  
         if self.ctc_weight<1:
             # Plot attention map to log
-            val_hyp,val_txt = cal_cer(att_pred,label,mapper=self.mapper,get_sentence=True)
+            val_hyp,val_txt = cal_cer(att_pred,label
+                    ,mapper=self.mapper,get_sentence=True)
             val_attmap = draw_att(att_maps,att_pred)
 
             # Record loss

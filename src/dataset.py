@@ -6,8 +6,11 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Dataset
 from src.preprocess import zero_padding,target_padding,extract_feature
+import librosa
 import pandas as pd
 import random
+import lmdb
+import re
 
 # TODO : Move this to config
 HALF_BATCHSIZE_TIME=800
@@ -117,6 +120,19 @@ class LibriDataset(Dataset):
         return len(self.Y)
 
 
+def collate_fn(samples):
+    #samples = [(x,y) for x, y in samples if x is not None and y is not None]
+    filter_fn = lambda pair: all(v is not None for v in pair)
+    samples = filter(filter_fn, samples)
+    xs, ys = list(zip(*sorted(samples, key=lambda pair: -pair[0].size(0))))
+    xs = pad_sequence(xs, batch_first=True)
+    ys = target_padding(ys, max([len(y) for y in ys]))
+    xs = xs.unsqueeze(0)
+    ys = torch.from_numpy(ys)
+    ys = ys.unsqueeze(0)
+    return xs, ys
+
+
 class DramaDataset(Dataset):
     def __init__(self, file_path, sets,
                  max_timestep=0, max_label_len=0, drop=False,
@@ -156,17 +172,6 @@ class DramaDataset(Dataset):
         #with open(vocab_path, "wb") as fp:
         #    pickle.dump(self.word2id, fp)
 
-    @staticmethod
-    def collate_fn(samples):
-        xs, ys = list(zip(*samples))
-        xs, ys = list(zip(*sorted(zip(xs, ys), key=lambda pair: -pair[0].size(0))))
-        xs = pad_sequence(xs, batch_first=True)
-        ys = target_padding(ys, max([len(y) for y in ys]))
-        xs = xs.unsqueeze(0)
-        ys = torch.from_numpy(ys)
-        ys = ys.unsqueeze(0)
-        return xs, ys
-
     def __getitem__(self, index):
         # Load label
         audio_f = os.path.join(self.root, self.X[index])
@@ -183,6 +188,58 @@ class DramaDataset(Dataset):
     def __len__(self):
         return len(self.Y)
 
+
+class LMDBDataset(Dataset):
+    def __init__(self, root, split):
+        self.path = os.path.join(root, 'drama.' + split)
+        self.env = lmdb.open(self.path,
+            max_readers=1,
+            readonly=True,
+            lock=False,
+            readahead=False,
+            meminit=False)
+        self.txn = self.env.begin(write=False)
+        str_num = self.txn.get(b'num-samples')
+        self.nSamples = int(str_num)
+        self.ZH = re.compile('[\u4e00-\u9fa5]|[A-Za-z]|[0-9]')
+        with open(os.path.join(root, 'mapping.pkl'), 'rb') as fp:
+            self.word2id = pickle.load(fp)
+        self.sos_idx = self.word2id['<sos>']
+        self.eos_idx = self.word2id['<eos>']
+        self.unk_idx = self.word2id['<unk>']
+
+    def tokenize(self, line):
+        tokens = self.ZH.findall(line)
+        indices = [self.sos_idx] + [self.word2id.get(token, self.unk_idx) \
+                for token in tokens] + [self.eos_idx]
+        return indices
+
+    def __len__(self):
+        return self.nSamples
+
+    def __getitem__(self, index):
+        #assert index <= len(self), 'index range error'
+        audiokey = 'audio-%09d' % (index)
+        labelkey = 'label-%09d' % (index)
+        filekey = 'file-%09d' % (index)
+
+        audioBin = self.txn.get(audiokey.encode())
+        feat = np.frombuffer(audioBin, dtype=np.float32)
+        feat = feat.reshape(-1, 80)
+        delta = librosa.feature.delta(feat)
+        delta_delta = librosa.feature.delta(feat, order=2)
+        feats = np.vstack([feat, delta, delta_delta])
+        feats = torch.from_numpy(feats)
+
+        line = self.txn.get(labelkey.encode()).decode('utf-8')
+        fileName = self.txn.get(filekey.encode()).decode('utf-8')
+        indices = self.tokenize(line)
+        if feats.size(0) < 1:
+            feats = None
+        if len(indices) < 3: # only sos and eos idx
+            indices = None
+
+        return feats, indices
 
 def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label_len, use_gpu, n_jobs,
                 dataset, train_set, dev_set, test_set, dev_batch_size, decode_beam_size,**kwargs):
@@ -219,24 +276,23 @@ def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label
         ds = LibriDataset(file_path=data_path, sets=sets, max_timestep=max_timestep,text_only=text_only,
                            max_label_len=max_label_len, bucket_size=bs,drop=drop_too_long)
     elif dataset.upper() == "TSMDRAMA":
-        collate_fn = DramaDataset.collate_fn
         ds = DramaDataset(file_path=data_path, sets=sets,max_timestep=max_timestep,
                           text_only=text_only,max_label_len=max_label_len,
                           drop=drop_too_long, speed=speed)
+    elif dataset.upper() == "TSMLMDB":
+        ds = LMDBDataset(root=data_path, split=split)
+    if "TSM" in dataset.upper():
         if shuffle:
             from src.sampler import BatchBucketSampler
             sampler = BatchBucketSampler(len(ds), bs * 2, bs, drop_last=False)
             return DataLoader(ds, batch_sampler=sampler,
-                              num_workers=n_jobs,collate_fn=DramaDataset.collate_fn,
+                              num_workers=n_jobs,collate_fn=collate_fn,
                               pin_memory=use_gpu)
         return DataLoader(ds, batch_size=bs,shuffle=shuffle,drop_last=False,
-                          num_workers=n_jobs,collate_fn=DramaDataset.collate_fn,
+                          num_workers=n_jobs,collate_fn=collate_fn,
                           pin_memory=use_gpu)
     else:
         raise ValueError('Unsupported Dataset: '+dataset)
 
     return  DataLoader(ds, batch_size=1,shuffle=shuffle,drop_last=False,num_workers=n_jobs,pin_memory=use_gpu)
 
-
-if __name__ == '__main__':
-    DramaDataset(file_path='/media/zhong-yi/DATA1/all', sets=['src-train.txt', 'tgt-train.txt'])
