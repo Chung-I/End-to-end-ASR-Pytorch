@@ -274,6 +274,7 @@ class Listener(nn.Module):
         self.sample_rate = [int(v) for v in sample_rate.split('_')]
         self.dropout = [float(v) for v in dropout.split('_')]
         self.sample_style = sample_style
+        self.DropOuts = nn.ModuleList([nn.Dropout(drop) for drop in self.dropout])
 
         # Parameters checking
         assert len(self.sample_rate)==len(self.dropout), 'Number of layer mismatch'
@@ -314,6 +315,7 @@ class Listener(nn.Module):
         for l in range(self.num_layers):
             input_x, _,enc_len = getattr(self,'layer'+str(l))(input_x,state_len=enc_len, pack_input=True)
             input_x = torch.tanh(getattr(self,'proj'+str(l))(input_x))
+            input_x = self.DropOuts[l](input_x)
         return input_x,enc_len
 
 # Speller specified in the paper
@@ -469,7 +471,6 @@ class RNNLayer(nn.Module):
         super(RNNLayer, self).__init__()
         self.sample_style = sample_style
         self.sample_rate = sample_rate
-        self.dropout = nn.Dropout(dropout_rate)
         
         self.layer = getattr(nn,rnn_cell.upper())(in_dim,out_dim, bidirectional=bidir, num_layers=layers,
                                dropout=dropout_rate,batch_first=True)
@@ -484,7 +485,6 @@ class RNNLayer(nn.Module):
         if pack_input:
             output,state_len = pad_packed_sequence(output,batch_first=True)
             state_len = state_len.tolist()
-        output = self.dropout(output)
 
 
         # Perform Downsampling
@@ -528,6 +528,8 @@ class VGGExtractor(nn.Module):
         if d%13 == 0:
             # MFCC feature
             return int(d/13),13,(13//4)*128
+        elif d == 240:
+            return int(d/80),80,(80//4)*128
         elif d%40 == 0:
             # Fbank feature
             return int(d/40),40,(40//4)*128
