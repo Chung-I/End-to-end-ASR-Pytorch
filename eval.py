@@ -8,9 +8,9 @@ parser.add_argument('--file', type=str, help='Path to decode result file.')
 paras = parser.parse_args()
 
                         
-decode = pd.read_csv(paras.file,sep='\t',header=None)
-truth = decode[0].tolist()
-pred = decode[1].tolist()
+with open(paras.file) as f:
+    pairs = f.read().splitlines()
+    truth, pred = list(zip(*[pair.split('\t') for pair in pairs]))
 cer = []
 wer = []
 for gt,pd in zip(truth,pred):
