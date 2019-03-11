@@ -11,12 +11,26 @@ import argparse
 import json
 from tsm_utils import poj_tl, tl2phone
 import re
+from collections import Counter
+from functools import reduce
 
 
 def writeCache(env, cache):
     with env.begin(write=True) as txn:
         for k, v in cache.items():
             txn.put(k.encode(), v)
+
+
+def gen_dict(outputPath, dataList):
+    sents = list(map(lambda x: x[1], dataList))
+    tokens = reduce(lambda x,y: x + y, [sent.split() for sent in sents])
+    typs = Counter(tokens)
+    id2word = ['<sos>', '<eos>', '<unk>']
+    id2word += list(map(lambda x: x[0], typs.most_common()))
+    word2id = {word: idx for idx, word in enumerate(id2word)}
+    print(word2id)
+    with open(outputPath, 'wb') as fp:
+        pickle.dump(word2id, fp)
 
 
 def getDataList(inputPath):
@@ -35,7 +49,7 @@ def getDataList(inputPath):
 
 def getDataListFromJson(inputPath):
     dataList = []
-    json_file = os.path.join(inputPath, 'pkl.json')
+    json_file = os.path.join(inputPath, 'data.json')
     with open(json_file) as f:
         datas = json.load(f)
     for data in datas:
@@ -56,7 +70,11 @@ def getDataListFromJson(inputPath):
 
 def extract_feature(input_file,feature='fbank',dim=40, cmvn=True, delta=False, delta_delta=False,
                     window_size=25, stride=10,save_feature=None, speed=1.0):
-    y, sr = librosa.load(input_file,sr=None)
+    try:
+        y, sr = librosa.load(input_file,sr=None)
+    except:
+        print('{} not found, skipping'.format(input_file))
+        return None
     duration = librosa.get_duration(y=y, sr=sr)
     if duration < 0.15:
         return None
@@ -165,11 +183,13 @@ def createDataset(outputPath, dataList, num_thd=1):
     writeCache(env, cache)
     print('Created dataset with %d samples' % nSamples)
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--out')
     parser.add_argument('--inf')
-    parser.add_argument('--threads', default=1, help='number of threads.')
+    parser.add_argument('--gen_dict', action='store_true')
+    parser.add_argument('--threads', type=int, default=1, help='number of threads.')
     parser.add_argument('--format', choices=['pair', 'path', 'json'], default='pair',
             help='format of input path')
     args = parser.parse_args()
@@ -188,4 +208,7 @@ if __name__ == '__main__':
     elif args.format == 'json':
         dataList = getDataListFromJson(inputPath)
 
-    createDataset(outputPath, dataList, args.threads)
+    if args.gen_dict:
+        gen_dict(outputPath, dataList)
+    else:
+        createDataset(outputPath, dataList, args.threads)
