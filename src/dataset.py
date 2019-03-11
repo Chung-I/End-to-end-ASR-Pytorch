@@ -190,8 +190,8 @@ class DramaDataset(Dataset):
 
 
 class LMDBDataset(Dataset):
-    def __init__(self, root, split):
-        self.path = os.path.join(root, 'drama.' + split)
+    def __init__(self, file_path, sets):
+        self.path = os.path.join(file_path, sets[0])
         self.env = lmdb.open(self.path,
             max_readers=1,
             readonly=True,
@@ -202,7 +202,7 @@ class LMDBDataset(Dataset):
         str_num = self.txn.get(b'num-samples')
         self.nSamples = int(str_num)
         self.ZH = re.compile('[\u4e00-\u9fa5]|[A-Za-z]|[0-9]')
-        with open(os.path.join(root, 'mapping.pkl'), 'rb') as fp:
+        with open(os.path.join(self.path, 'mapping.pkl'), 'rb') as fp:
             self.word2id = pickle.load(fp)
         self.sos_idx = self.word2id['<sos>']
         self.eos_idx = self.word2id['<eos>']
@@ -228,7 +228,7 @@ class LMDBDataset(Dataset):
         feat = feat.reshape(-1, 80)
         delta = librosa.feature.delta(feat)
         delta_delta = librosa.feature.delta(feat, order=2)
-        feats = np.vstack([feat, delta, delta_delta])
+        feats = np.concatenate((feat, delta, delta_delta), axis=1)
         feats = torch.from_numpy(feats)
 
         line = self.txn.get(labelkey.encode()).decode('utf-8')
@@ -242,7 +242,7 @@ class LMDBDataset(Dataset):
         return feats, indices
 
 def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label_len, use_gpu, n_jobs,
-                dataset, train_set, dev_set, test_set, dev_batch_size, decode_beam_size,**kwargs):
+                dataset, train_set, dev_set, test_set, phn_set, dev_batch_size, decode_beam_size,**kwargs):
     speed = False
     if split=='train':
         bs = batch_size
@@ -265,6 +265,11 @@ def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label
         shuffle = True
         sets = train_set
         drop_too_long = True
+    elif split=='phn':
+        bs = batch_size
+        shuffle = True
+        sets = phn_set
+        drop_too_long = True
     else:
         raise NotImplementedError
         
@@ -280,7 +285,7 @@ def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label
                           text_only=text_only,max_label_len=max_label_len,
                           drop=drop_too_long, speed=speed)
     elif dataset.upper() == "TSMLMDB":
-        ds = LMDBDataset(root=data_path, split=split)
+        ds = LMDBDataset(file_path=data_path, sets=sets)
     if "TSM" in dataset.upper():
         if shuffle:
             from src.sampler import BatchBucketSampler
