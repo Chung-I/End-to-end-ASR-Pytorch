@@ -44,6 +44,10 @@ class Seq2Seq(nn.Module):
         if self.joint_ctc:
             self.ctc_weight =  model_para['optimizer']['joint_ctc']
             self.ctc_layer = nn.Linear(enc_out_dim,output_dim)
+        phn_dim = model_para['phn_dim']
+        if phn_dim > 0 :
+            self.phn_ctc = True
+            self.phn_ctc_layer = nn.Linear(enc_out_dim,phn_dim)
 
         self.init_parameters()
 
@@ -55,7 +59,7 @@ class Seq2Seq(nn.Module):
     def clear_att(self):
         self.attention.reset_enc_mem()
 
-    def forward(self, audio_feature, decode_step,tf_rate=0.0,teacher=None,state_len=None):
+    def forward(self, audio_feature, decode_step,tf_rate=0.0,teacher=None,state_len=None, phn_only=False):
         bs = audio_feature.shape[0]
         # Encode
         encode_feature,encode_len = self.encoder(audio_feature,state_len)
@@ -65,6 +69,10 @@ class Seq2Seq(nn.Module):
         att_maps = None
 
         # CTC based decoding
+        if phn_only and self.phn_ctc:
+            phn_output = self.phn_ctc_layer(encode_feature)
+            return phn_output, encode_len, None, None
+        # CTC based decoding
         if self.joint_ctc:
             ctc_output = self.ctc_layer(encode_feature)
 
@@ -72,12 +80,14 @@ class Seq2Seq(nn.Module):
         if self.joint_att:
             if teacher is not None:
                 teacher = self.embed(teacher)
-            
+
             # Init (init char = <SOS>, reset all rnn state and cell)
             self.decoder.init_rnn(encode_feature)
             self.attention.reset_enc_mem()
             last_char = self.embed(torch.zeros((bs),dtype=torch.long).to(next(self.decoder.parameters()).device))
             output_char_seq = []
+            sampled_char_seq = []
+            sampled_chars = None
             output_att_seq = [[]] * self.attention.num_head
         
             # Decode
@@ -97,6 +107,7 @@ class Seq2Seq(nn.Module):
                         last_char = teacher[:,t+1,:]
                     else:
                         sampled_char = Categorical(F.softmax(cur_char,dim=-1)).sample()
+                        sampled_char_seq.append(sampled_char)
                         last_char = self.embed(sampled_char)
                 else:
                     last_char = self.embed(torch.argmax(cur_char,dim=-1))
@@ -108,8 +119,10 @@ class Seq2Seq(nn.Module):
 
             att_output = torch.stack(output_char_seq,dim=1)
             att_maps = [torch.stack(att,dim=1) for att in output_att_seq]
+            if len(sampled_char_seq) == decode_step:
+                sampled_chars = torch.stack(sampled_char_seq, dim=1)
 
-        return ctc_output, encode_len, att_output, att_maps
+        return ctc_output, encode_len, att_output, att_maps, sampled_chars
 
     def init_parameters(self):
         # Reference : https://github.com/espnet/espnet/blob/master/espnet/nets/e2e_asr_th.py
@@ -180,6 +193,12 @@ class Seq2Seq(nn.Module):
             ctc_output = F.log_softmax(self.ctc_layer(encode_feature),dim=-1)
             ctc_prefix = CTCPrefixScore(ctc_output)
             ctc_state = ctc_prefix.init_state()
+
+        # Extra Phone decoding
+        if self.phn_ctc:
+            phn_output = F.log_softmax(self.phn_ctc_layer(encode_feature),dim=-1)
+            phn_prefix = CTCPrefixScore(phn_output)
+            phn_state = phn_prefix.init_state()
 
         # Attention based decoding
         if self.joint_att:

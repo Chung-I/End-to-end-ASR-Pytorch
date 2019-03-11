@@ -13,6 +13,7 @@ from src.rnnlm import RNN_LM
 from src.clm import CLM_wrapper
 from src.dataset import LoadDataset
 from src.postprocess import Mapper,cal_acc,cal_cer,draw_att
+from src.ocd import gen_policy
 
 def is_monotonic(l, incr=False):
     op = (lambda x,y: x <= y) if incr else (lambda x, y: x >= y)
@@ -40,7 +41,12 @@ class Solver():
         if not os.path.exists(self.ckpdir):os.makedirs(self.ckpdir)
         
         # Load Mapper for idx2token
-        self.mapper = Mapper(config['solver']['data_path'])
+        mpr_path = os.path.join(config['solver']['data_path'], config['solver']['train_set'][0])
+        self.mapper = Mapper(mpr_path)
+        phn_set = config['solver'].get('phn_set')
+        if phn_set is not None:
+            mpr_path = os.path.join(config['solver']['data_path'], config['solver']['phn_set'][0])
+            self.phn_mapper = Mapper(mpr_path)
 
     def verbose(self,msg):
         ''' Verbose function for print information to stdout'''
@@ -65,6 +71,7 @@ class Trainer(Solver):
 
         # Training details
         self.step = 0
+        self.ocd = self.config['solver']['ocd']
         self.max_step = config['solver']['total_steps']
         self.tf_start = config['solver']['tf_start']
         self.tf_end = config['solver']['tf_end']
@@ -78,6 +85,8 @@ class Trainer(Solver):
         self.verbose('Loading data from '+self.config['solver']['data_path'])
         setattr(self,'train_set',LoadDataset('train',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
         setattr(self,'dev_set',LoadDataset('dev',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
+        if 'phn_set' in self.config['solver']:
+            self.phn_set = LoadDataset('phn', text_only=False, use_gpu=self.paras.gpu,**self.config['solver'])
         
         # Get 1 example for auto constructing model
         for self.sample_x,_ in getattr(self,'train_set'):break
@@ -88,10 +97,16 @@ class Trainer(Solver):
         self.verbose('Init ASR model. Note: validation is done through greedy decoding w/ attention decoder.')
         
         # Build attention end-to-end ASR
+        self.config['asr_model']['phn_dim'] = self.phn_mapper.get_dim() \
+                if hasattr(self, 'phn_mapper') else 0
         self.asr_model = Seq2Seq(self.sample_x,self.mapper.get_dim(),self.config['asr_model']).to(self.device)
         if 'VGG' in self.config['asr_model']['encoder']['enc_type']:
             self.verbose('VCC Extractor in Encoder is enabled, time subsample rate = 4.')
-        self.seq_loss = torch.nn.CrossEntropyLoss(ignore_index=0, reduction='none').to(self.device)#, reduction='none')
+        if self.ocd:
+            self.seq_loss = torch.nn.KLDivLoss(reduction='none').to(self.device)
+        else:
+            self.seq_loss = torch.nn.CrossEntropyLoss(ignore_index=0, reduction='none').to(self.device)
+        self.dev_seq_loss = torch.nn.CrossEntropyLoss(ignore_index=0, reduction='none').to(self.device)
         
         # Involve CTC
         self.ctc_loss = torch.nn.CTCLoss(blank=0, reduction='mean')
@@ -121,35 +136,84 @@ class Trainer(Solver):
 
     def exec(self):
         ''' Training End-to-end ASR system'''
-        self.verbose('Training set total '+str(len(self.train_set))+' batches.')
 
+        def preprocess(x, y):
+            assert len(x.shape)==4,'Bucketing should cause acoustic feature to have shape 1xBxTxD'
+            assert len(y.shape)==3,'Bucketing should cause label have to shape 1xBxT'
+            x = x.squeeze(0).to(device = self.device,dtype=torch.float32)
+            y = y.squeeze(0).to(device = self.device,dtype=torch.long)
+            state_len = np.sum(np.sum(x.cpu().data.numpy(),axis=-1)!=0,axis=-1)
+            state_len = [int(sl) for sl in state_len]
+            if not is_monotonic(state_len):
+                print('state_len is not decreasing, skipping')
+                print(state_len)
+                raise NotImplementedError
+            if 0 in state_len:
+                print('state_len contains 0, skipping')
+                print(state_len)
+                raise NotImplementedError
+            ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
+            return x, y, state_len, ans_len
+
+        def back_prop(loss):
+            loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.asr_model.parameters(), GRAD_CLIP)
+            if math.isnan(grad_norm):
+                self.verbose('Error : grad norm is NaN @ step '+str(self.step))
+            else:
+                self.asr_opt.step()
+
+        def phn_training():
+            if not hasattr(self, 'phn_set'):
+                return
+            else:
+                try:
+                    x, y = next(self.phn_set_iter)
+                except StopIteration:
+                    self.phn_set_iter = iter(self.phn_set)
+                    x, y = next(self.phn_set_iter)
+                self.progress('Training step - '+str(self.step))
+                loss_log = {}
+                try:
+                    x, y, state_len, ans_len = preprocess(x, y)
+                except NotImplementedError:
+                    return
+                self.asr_opt.zero_grad()
+                ctc_pred, state_len, _, _ =  self.asr_model(x, ans_len,tf_rate=1,teacher=y,
+                        state_len=state_len, phn_only=True)
+                label = y[:,1:ans_len+1].contiguous()
+                target_len = torch.sum(y!=0,dim=-1)
+                ctc_loss = self.ctc_loss(F.log_softmax(ctc_pred.transpose(0,1),dim=-1), 
+                        label, torch.LongTensor(state_len), target_len)
+                back_prop(ctc_loss)
+                loss_log['phn_ctc'] = ctc_loss.detach().cpu()
+                self.write_log('loss',loss_log)
+                self.step += 1
+
+        self.phn_set_iter = iter(self.phn_set)
         while self.step< self.max_step:
+
+            #for i in range(len(self.phn_set)):
+            #    phn_training()
+            self.verbose('Extra phone set total '+str(len(self.phn_set))+' batches.')
+            self.verbose('Training set total '+str(len(self.train_set))+' batches.')
             for x,y in self.train_set:
                 self.progress('Training step - '+str(self.step))
                 
                 # Perform teacher forcing rate decaying
                 tf_rate = self.tf_start - self.step*(self.tf_start-self.tf_end)/self.max_step
+                true_tf_rate = 0 if self.ocd else tf_rate
                 
                 # Hack bucket, record state length for each uttr, get longest label seq for decode step
-                assert len(x.shape)==4,'Bucketing should cause acoustic feature to have shape 1xBxTxD'
-                assert len(y.shape)==3,'Bucketing should cause label have to shape 1xBxT'
-                x = x.squeeze(0).to(device = self.device,dtype=torch.float32)
-                y = y.squeeze(0).to(device = self.device,dtype=torch.long)
-                state_len = np.sum(np.sum(x.cpu().data.numpy(),axis=-1)!=0,axis=-1)
-                state_len = [int(sl) for sl in state_len]
-                if not is_monotonic(state_len):
-                    print('state_len is not decreasing, skipping')
-                    print(state_len)
+                try:
+                    x, y, state_len, ans_len = preprocess(x, y)
+                except NotImplementedError:
                     continue
-                if 0 in state_len:
-                    print('state_len contains 0, skipping')
-                    print(state_len)
-                    continue
-                ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
 
                 # ASR forwarding 
                 self.asr_opt.zero_grad()
-                ctc_pred, state_len, att_pred, _ =  self.asr_model(x, ans_len,tf_rate=tf_rate,teacher=y,state_len=state_len)
+                ctc_pred, state_len, att_pred, _, att_sample = \
+                        self.asr_model(x, ans_len,tf_rate=true_tf_rate,teacher=y,state_len=state_len)
 
                 # Calculate loss function
                 loss_log = {}
@@ -160,20 +224,27 @@ class Trainer(Solver):
                 # CE loss on attention decoder
                 if self.ctc_weight<1:
                     b,t,c = att_pred.shape
-                    att_loss = self.seq_loss(att_pred.view(b*t,c),label.view(-1))
-                    att_loss = torch.sum(att_loss.view(b,t),dim=-1)/torch.sum(y!=0,dim=-1)\
-                               .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
+                    if self.ocd:
+                        policy = gen_policy(att_pred, att_sample, label, temp=tf_rate)
+                        log_prob_att_pred = F.log_softmax(att_pred.view(b*t,c), dim=-1)
+                        att_loss = self.seq_loss(log_prob_att_pred, policy.view(b*t,c))
+                        att_loss = torch.sum(att_loss.view(b,t*c),dim=-1)/torch.sum(y!=0,dim=-1)\
+                                   .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
+                    else:
+                        att_loss = self.seq_loss(att_pred.view(b*t,c),label.view(-1))
+                        att_loss = torch.sum(att_loss.view(b,t),dim=-1)/torch.sum(y!=0,dim=-1)\
+                                   .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
                     att_loss = torch.mean(att_loss) # Mean by batch
-                    loss_log['train_att'] = att_loss.detach()
+                    loss_log['train_att'] = att_loss.detach().cpu()
 
                 # CTC loss on CTC decoder
                 if self.ctc_weight>0:
                     target_len = torch.sum(y!=0,dim=-1)
                     ctc_loss = self.ctc_loss( F.log_softmax( ctc_pred.transpose(0,1),dim=-1), label, torch.LongTensor(state_len), target_len)
-                    loss_log['train_ctc'] = ctc_loss.detach()
+                    loss_log['train_ctc'] = ctc_loss.detach().cpu()
                 
                 asr_loss = (1-self.ctc_weight)*att_loss+self.ctc_weight*ctc_loss
-                loss_log['train_full'] = asr_loss.detach()
+                loss_log['train_full'] = asr_loss.detach().cpu()
                 
                 # Adversarial loss from CLM
                 if self.apply_clm and att_pred.shape[1]>=CLM_MIN_SEQ_LEN:
@@ -186,12 +257,7 @@ class Trainer(Solver):
                     asr_loss -= adv_feedback
 
                 # Backprop
-                asr_loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(self.asr_model.parameters(), GRAD_CLIP)
-                if math.isnan(grad_norm):
-                    self.verbose('Error : grad norm is NaN @ step '+str(self.step))
-                else:
-                    self.asr_opt.step()
+                back_prop(asr_loss)
                 
                 att_pred.detach_()
                 label.detach_()
@@ -203,6 +269,8 @@ class Trainer(Solver):
                     self.write_log('error rate',
                                    {'train':cal_cer(att_pred,label,
                                        mapper=self.mapper)})
+
+                phn_training()
 
                 # Validation
                 self.step+=1
@@ -247,12 +315,12 @@ class Trainer(Solver):
             ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
             
             # Forward
-            ctc_pred, state_len, att_pred, att_maps = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+            ctc_pred, state_len, att_pred, att_maps, _ = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
 
             # Compute attention loss & get decoding results
             label = y[:,1:ans_len+1].contiguous()
             if self.ctc_weight<1:
-                seq_loss = self.seq_loss(att_pred[:,:ans_len,:].contiguous().view(-1,att_pred.shape[-1]),label.view(-1))
+                seq_loss = self.dev_seq_loss(att_pred[:,:ans_len,:].contiguous().view(-1,att_pred.shape[-1]),label.view(-1))
                 seq_loss = torch.sum(seq_loss.view(x.shape[0],-1),dim=-1)/torch.sum(y!=0,dim=-1)\
                            .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
                 seq_loss = torch.mean(seq_loss) # Mean by batch
@@ -268,7 +336,7 @@ class Trainer(Solver):
             # Compute CTC loss
             if self.ctc_weight>0:
                 target_len = torch.sum(y!=0,dim=-1)
-                ctc_loss = self.ctc_loss( F.log_softmax( ctc_pred.transpose(0,1),dim=-1), label, 
+                ctc_loss = self.ctc_loss( F.log_softmax( ctc_pred.transpose(0,1),dim=-1), label,
                                          torch.LongTensor(state_len), target_len)
                 val_ctc += ctc_loss.detach()*int(x.shape[0])
 
@@ -284,7 +352,7 @@ class Trainer(Solver):
         val_loss = (1-self.ctc_weight)*val_att + self.ctc_weight*val_ctc
         loss_log = {}
         for k,v in zip(['dev_full','dev_ctc','dev_att'],[val_loss, val_ctc, val_att]):
-            if v > 0.0: loss_log[k] = v/val_len
+            if v > 0.0: loss_log[k] = v.detach().cpu()/val_len
         self.write_log('loss',loss_log)
  
         if self.ctc_weight<1:
@@ -432,7 +500,7 @@ class Tester(Solver):
                 ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
 
                 # Forward
-                ctc_pred, state_len, att_pred, att_maps = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+                ctc_pred, state_len, att_pred, att_maps, _ = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
                 ctc_pred = torch.argmax(ctc_pred,dim=-1).cpu() if ctc_pred is not None else None
                 ctc_results.append(ctc_pred)
 
