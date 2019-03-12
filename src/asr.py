@@ -69,9 +69,11 @@ class Seq2Seq(nn.Module):
         att_maps = None
 
         # CTC based decoding
-        if phn_only and self.phn_ctc:
+        phn_output = None
+        if self.phn_ctc:
             phn_output = self.phn_ctc_layer(encode_feature)
-            return phn_output, encode_len, None, None
+            if phn_only:
+                return None, encode_len, None, None, None, phn_output
         # CTC based decoding
         if self.joint_ctc:
             ctc_output = self.ctc_layer(encode_feature)
@@ -110,7 +112,9 @@ class Seq2Seq(nn.Module):
                         sampled_char_seq.append(sampled_char)
                         last_char = self.embed(sampled_char)
                 else:
-                    last_char = self.embed(torch.argmax(cur_char,dim=-1))
+                    sampled_char = torch.argmax(cur_char,dim=-1)
+                    sampled_char_seq.append(sampled_char)
+                    last_char = self.embed(sampled_char)
 
 
                 output_char_seq.append(cur_char)
@@ -122,7 +126,7 @@ class Seq2Seq(nn.Module):
             if len(sampled_char_seq) == decode_step:
                 sampled_chars = torch.stack(sampled_char_seq, dim=1)
 
-        return ctc_output, encode_len, att_output, att_maps, sampled_chars
+        return ctc_output, encode_len, att_output, att_maps, sampled_chars, phn_output
 
     def init_parameters(self):
         # Reference : https://github.com/espnet/espnet/blob/master/espnet/nets/e2e_asr_th.py

@@ -13,13 +13,15 @@ from src.rnnlm import RNN_LM
 from src.clm import CLM_wrapper
 from src.dataset import LoadDataset
 from src.postprocess import Mapper,cal_acc,cal_cer,draw_att
-from src.ocd import gen_policy
+from src.ocd import ocd_loss
+
 
 def is_monotonic(l, incr=False):
     op = (lambda x,y: x <= y) if incr else (lambda x, y: x >= y)
     return all(op(l[i], l[i+1]) for i in range(len(l)-1))
 
 
+TRAIN_STEP_RATIO = 1.5 # Additional Sampling Timesteps to run during training (for OCD)
 VAL_STEP = 30        # Additional Inference Timesteps to run during validation (to calculate CER)
 TRAIN_WER_STEP = 250 # steps for debugging info.
 GRAD_CLIP = 5
@@ -71,7 +73,7 @@ class Trainer(Solver):
 
         # Training details
         self.step = 0
-        self.ocd = self.config['solver']['ocd']
+        self.ocd = self.config['solver'].get('ocd', False)
         self.max_step = config['solver']['total_steps']
         self.tf_start = config['solver']['tf_start']
         self.tf_end = config['solver']['tf_end']
@@ -102,11 +104,7 @@ class Trainer(Solver):
         self.asr_model = Seq2Seq(self.sample_x,self.mapper.get_dim(),self.config['asr_model']).to(self.device)
         if 'VGG' in self.config['asr_model']['encoder']['enc_type']:
             self.verbose('VCC Extractor in Encoder is enabled, time subsample rate = 4.')
-        if self.ocd:
-            self.seq_loss = torch.nn.KLDivLoss(reduction='none').to(self.device)
-        else:
-            self.seq_loss = torch.nn.CrossEntropyLoss(ignore_index=0, reduction='none').to(self.device)
-        self.dev_seq_loss = torch.nn.CrossEntropyLoss(ignore_index=0, reduction='none').to(self.device)
+        self.seq_loss = torch.nn.CrossEntropyLoss(ignore_index=0, reduction='none').to(self.device)
         
         # Involve CTC
         self.ctc_loss = torch.nn.CTCLoss(blank=0, reduction='mean')
@@ -179,11 +177,11 @@ class Trainer(Solver):
                 except NotImplementedError:
                     return
                 self.asr_opt.zero_grad()
-                ctc_pred, state_len, _, _ =  self.asr_model(x, ans_len,tf_rate=1,teacher=y,
+                _, state_len, _, _, _, phn_pred = self.asr_model(x, ans_len,tf_rate=1,teacher=y,
                         state_len=state_len, phn_only=True)
                 label = y[:,1:ans_len+1].contiguous()
                 target_len = torch.sum(y!=0,dim=-1)
-                ctc_loss = self.ctc_loss(F.log_softmax(ctc_pred.transpose(0,1),dim=-1), 
+                ctc_loss = self.ctc_loss(F.log_softmax(phn_pred.transpose(0,1),dim=-1), 
                         label, torch.LongTensor(state_len), target_len)
                 back_prop(ctc_loss)
                 loss_log['phn_ctc'] = ctc_loss.detach().cpu()
@@ -202,7 +200,7 @@ class Trainer(Solver):
                 
                 # Perform teacher forcing rate decaying
                 tf_rate = self.tf_start - self.step*(self.tf_start-self.tf_end)/self.max_step
-                true_tf_rate = 0 if self.ocd else tf_rate
+                tf_rate = 0 if self.ocd else tf_rate
                 
                 # Hack bucket, record state length for each uttr, get longest label seq for decode step
                 try:
@@ -212,8 +210,9 @@ class Trainer(Solver):
 
                 # ASR forwarding 
                 self.asr_opt.zero_grad()
-                ctc_pred, state_len, att_pred, _, att_sample = \
-                        self.asr_model(x, ans_len,tf_rate=true_tf_rate,teacher=y,state_len=state_len)
+                train_len = int(ans_len*TRAIN_STEP_RATIO) if self.ocd else ans_len
+                ctc_pred, state_len, att_pred, _, att_sample, _ = \
+                        self.asr_model(x, train_len,tf_rate=tf_rate,teacher=y,state_len=state_len)
 
                 # Calculate loss function
                 loss_log = {}
@@ -225,16 +224,12 @@ class Trainer(Solver):
                 if self.ctc_weight<1:
                     b,t,c = att_pred.shape
                     if self.ocd:
-                        policy = gen_policy(att_pred, att_sample, label, temp=tf_rate)
-                        log_prob_att_pred = F.log_softmax(att_pred.view(b*t,c), dim=-1)
-                        att_loss = self.seq_loss(log_prob_att_pred, policy.view(b*t,c))
-                        att_loss = torch.sum(att_loss.view(b,t*c),dim=-1)/torch.sum(y!=0,dim=-1)\
-                                   .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
+                        att_loss = ocd_loss(att_pred, att_sample, label, temp=1e-8)
                     else:
                         att_loss = self.seq_loss(att_pred.view(b*t,c),label.view(-1))
-                        att_loss = torch.sum(att_loss.view(b,t),dim=-1)/torch.sum(y!=0,dim=-1)\
-                                   .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
-                    att_loss = torch.mean(att_loss) # Mean by batch
+                        att_loss = torch.sum(att_loss.view(b,t), dim=-1)/torch.sum(y!=0,dim=-1)\
+                            .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
+                        att_loss = torch.mean(att_loss) # Mean by batch
                     loss_log['train_att'] = att_loss.detach().cpu()
 
                 # CTC loss on CTC decoder
@@ -315,15 +310,18 @@ class Trainer(Solver):
             ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
             
             # Forward
-            ctc_pred, state_len, att_pred, att_maps, _ = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+            ctc_pred, state_len, att_pred, att_maps, att_sample, _ = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
 
             # Compute attention loss & get decoding results
             label = y[:,1:ans_len+1].contiguous()
             if self.ctc_weight<1:
-                seq_loss = self.dev_seq_loss(att_pred[:,:ans_len,:].contiguous().view(-1,att_pred.shape[-1]),label.view(-1))
-                seq_loss = torch.sum(seq_loss.view(x.shape[0],-1),dim=-1)/torch.sum(y!=0,dim=-1)\
-                           .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
-                seq_loss = torch.mean(seq_loss) # Mean by batch
+                if self.ocd:
+                    seq_loss = ocd_loss(att_pred, att_sample, label, temp=1e-8)
+                else:
+                    seq_loss = self.seq_loss(att_pred[:,:ans_len,:].contiguous().view(-1,att_pred.shape[-1]),label.view(-1))
+                    seq_loss = torch.sum(seq_loss.view(x.shape[0],-1),dim=-1)/torch.sum(y!=0,dim=-1)\
+                               .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
+                    seq_loss = torch.mean(seq_loss) # Mean by batch
                 val_att += seq_loss.detach()*int(x.shape[0])
                 t1,t2 = cal_cer(att_pred,label,
                         mapper=self.mapper,get_sentence=True)
@@ -486,6 +484,7 @@ class Tester(Solver):
         val_len = 0    
         all_pred,all_true = [],[]
         ctc_results = []
+        phn_results = []
         with torch.no_grad():
             for cur_b,(x,y) in enumerate(self.dev_set):
                 self.progress(' '.join(['Valid step - (',str(cur_b),'/',str(len(self.dev_set)),')']))
@@ -500,9 +499,11 @@ class Tester(Solver):
                 ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
 
                 # Forward
-                ctc_pred, state_len, att_pred, att_maps, _ = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+                ctc_pred, state_len, att_pred, att_maps, _, phn_pred = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
                 ctc_pred = torch.argmax(ctc_pred,dim=-1).cpu() if ctc_pred is not None else None
+                phn_pred = torch.argmax(phn_pred,dim=-1).cpu() if phn_pred is not None else None
                 ctc_results.append(ctc_pred)
+                phn_results.append(phn_pred)
 
                 # Result
                 label = y[:,1:ans_len+1].contiguous()
@@ -521,17 +522,21 @@ class Tester(Solver):
                 f.write(gt.lstrip()+'\t'+hyp.lstrip()+'\n')
         
         # Also dump CTC result if available
-        if ctc_results[0] is not None:
-            ctc_results = [i for ins in ctc_results for i in ins]
+        def ctc_decode(results, mapper, out_file):
+            results = [i for ins in results for i in ins]
             ctc_text = []
-            for pred in ctc_results:
+            for pred in results:
                 p = [i for i in pred.tolist() if i != 0]
                 p = [k for k, g in itertools.groupby(p)]
-                ctc_text.append(self.mapper.translate(p,return_string=True))
-            self.verbose('Also, see {} for CTC validation results.'.format(os.path.join(self.ckpdir,'dev_ctc_decode.txt'))) 
-            with open(os.path.join(self.ckpdir,'dev_ctc_decode.txt'),'w') as f:
+                ctc_text.append(mapper.translate(p,return_string=True))
+            self.verbose('Also, see {} for CTC validation results.'.format(os.path.join(self.ckpdir, out_file))) 
+            with open(os.path.join(self.ckpdir, out_file),'w') as f:
                 for hyp,gt in zip(ctc_text,all_true):
                     f.write(gt.lstrip()+'\t'+hyp.lstrip()+'\n')
+        if ctc_results[0] is not None:
+            ctc_decode(ctc_results, self.mapper, 'dev_ctc_decode.txt')
+        if phn_results[0] is not None:
+            ctc_decode(phn_results, self.phn_mapper, 'dev_phn_decode.txt')
 
 
 class RNNLM_Trainer(Solver):

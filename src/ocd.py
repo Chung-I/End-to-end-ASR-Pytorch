@@ -1,5 +1,5 @@
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 
 def lev(ref, hyp):
     table = [[0 for i,_ in enumerate(ref)] for j,_ in enumerate(hyp)]
@@ -20,7 +20,7 @@ def ocd(ref):
     table = [list(range(len(ref)))]
     def step(h):
         i = len(table)
-        if h != None:
+        if h != '<sos>':
             row = [i]
             for j, r in enumerate(ref[:-1]):
                 j += 1
@@ -35,25 +35,31 @@ def ocd(ref):
 
     return step
 
-def gen_policy(out_probs, samples, labels, temp=1e-8):
-    temp = max(temp, 1e-8)
-    q_vals = []
-    for out_prob, sample, label in zip(out_probs, samples, labels):
+def ocd_loss(out_probs, samples, labels, temp=1e-8):
+    temp = max(temp, 1e-8) # to prevent division by zero
+    vocab_size = out_probs.size(-1)
+    loss = 0
+    batch_size = len(labels)
+
+    for b, (sample, label) in enumerate(zip(samples, labels)):
         sample = sample.tolist()
-        label = label.tolist()
-        q_val = torch.zeros_like(out_prob)
+        try:
+            len_sample = sample.index(1) + 1 # length of sample is where the first <eos> appears
+        except ValueError:
+            len_sample = len(sample)
+        sample = sample[:len_sample]
+        label = label[label != 0].tolist() # exclude pad token
+        q_val = out_probs.new_zeros((len_sample, vocab_size))
         play = ocd(label)
-        for t, char in enumerate([None] + sample[:-1]):
+        for t, char in enumerate(['<sos>'] + sample[:-1]):
             cands, m = play(char)
             cands = torch.LongTensor(cands)
             q_val[t] = -(m + 1)
             q_val[t,cands] = -m
 
-        q_vals.append(q_val)
+        loss += - (F.softmax(q_val / temp, dim=-1) * F.log_softmax(out_probs[b,:len_sample,:]))\
+                .sum(dim=-1).mean()
 
-    q_vals = torch.stack(q_vals, dim=0)
-    policies = nn.functional.softmax(q_vals / temp, dim=-1)
-
-    return policies
-
+    loss /= batch_size
+    return loss
 
