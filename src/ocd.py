@@ -44,7 +44,7 @@ def ocd_loss(out_probs, samples, labels, temp=1e-8):
             q_val[t] = -(m + 1)
             q_val[t,cands] = -m
 
-        loss += (F.softmax(q_val / temp, dim=-1) * F.log_softmax(out_probs[b,:len_sample,:]))\
+        loss += - (F.softmax(q_val / temp, dim=-1) * F.log_softmax(out_probs[b,:len_sample,:]))\
                 .sum(dim=-1).mean()
 
     loss /= batch_size
