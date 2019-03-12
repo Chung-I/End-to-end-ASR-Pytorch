@@ -37,7 +37,7 @@ class Mapper():
             elif self.unit == 'phone':
                 new_seq = ' '.join(collapse_phn(new_seq)).replace('<sos>','').replace('<eos>','')
             elif self.unit == 'char':
-                new_seq = ''.join(new_seq).replace('<sos>','').replace('<eos>','')
+                new_seq = ' '.join(new_seq).replace('<sos>','').replace('<eos>','')
         return new_seq
 
 
