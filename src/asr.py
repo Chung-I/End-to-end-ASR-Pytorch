@@ -101,7 +101,9 @@ class Seq2Seq(nn.Module):
                         sampled_char_seq.append(sampled_char)
                         last_char = self.embed(sampled_char)
                 else:
-                    last_char = self.embed(torch.argmax(cur_char,dim=-1))
+                    sampled_char = torch.argmax(cur_char,dim=-1)
+                    sampled_char_seq.append(sampled_char)
+                    last_char = self.embed(sampled_char)
 
 
                 output_char_seq.append(cur_char)
@@ -112,7 +114,7 @@ class Seq2Seq(nn.Module):
             att_maps = [torch.stack(att,dim=1) for att in output_att_seq]
 
             sampled_chars = None
-            if tf_rate == 0:
+            if len(sampled_char_seq) == decode_step:
                 sampled_chars = torch.stack(sampled_char_seq, dim=1)
 
         return ctc_output, encode_len, att_output, att_maps, sampled_chars
