@@ -59,6 +59,8 @@ def create_dataset(tokenizer, train_split, dev_split, name, path, bucketing, bat
     # Recognize corpus
     if name.lower() == "librispeech":
         from corpus.librispeech import LibriDataset as Dataset
+    elif name.lower() == "tsmbible":
+        from corpus.bible import TSMBibleDataset as Dataset
     else:
         raise NotImplementedError
 
