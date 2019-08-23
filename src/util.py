@@ -3,6 +3,7 @@ import time
 import numpy as np
 from torch import nn
 import editdistance as ed
+from itertools import groupby
 
 import matplotlib
 matplotlib.use('Agg')
@@ -78,15 +79,20 @@ def human_format(num):
     # add more suffixes if you need them
     return '{:3}{}'.format(num, [' ', 'K', 'M', 'G', 'T', 'P'][magnitude])
 
-def cal_er(tokenizer, pred, truth, mode='wer'):
+def cal_er(tokenizer, pred, truth, mode='wer', ctc=False):
     # Calculate error rate of a batch
+    blank_idx = tokenizer.pad_idx
     if pred is None:
         return np.nan
     elif len(pred.shape)>=3:
         pred = pred.argmax(dim=-1)
     er = []
     for p,t in zip(pred,truth):
-        p = tokenizer.decode(p.tolist())
+        p = p.tolist()
+        if ctc:
+            p = [k for k, g in groupby(p) if k != blank_idx]
+            p = [tokenizer.unk_idx, tokenizer.eos_idx] if not p else p
+        p = tokenizer.decode(p)
         t = tokenizer.decode(t.tolist())
         if mode == 'wer':
             p = p.split(' ')
