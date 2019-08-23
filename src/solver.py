@@ -171,7 +171,7 @@ class Trainer(Solver):
                     self.write_log('loss',{'tr_ctc':ctc_loss})
                     self.write_log('loss',{'tr_att':att_loss})
                     self.write_log('wer',{'tr_att':cal_er(self.tokenizer,att_output,txt),
-                                          'tr_ctc':cal_er(self.tokenizer,ctc_output,txt)})
+                                          'tr_ctc':cal_er(self.tokenizer,ctc_output,txt, ctc=True)})
                 # Validation
                 if self.step%self.valid_step == 0:
                     self.validate()
@@ -197,7 +197,7 @@ class Trainer(Solver):
                     self.asr_model( feat, feat_len, max(txt_len)+ADDITIONAL_DEV_STEP)
 
             dev_wer['att'].append(cal_er(self.tokenizer,att_output,txt))
-            dev_wer['ctc'].append(cal_er(self.tokenizer,ctc_output,txt))
+            dev_wer['ctc'].append(cal_er(self.tokenizer,ctc_output,txt, ctc=True))
         
         # Ckpt if performance improves
         for task in ['att','ctc']:
