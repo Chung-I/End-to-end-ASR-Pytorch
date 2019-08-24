@@ -7,7 +7,26 @@ from torch import nn
 import torch.nn.functional as F
 
 from src.module import BaseAttention
-import pdb
+
+def weighted_sum(matrix: torch.Tensor, attention: torch.Tensor) -> torch.Tensor:
+    if attention.dim() == 2 and matrix.dim() == 3:
+        return attention.unsqueeze(1).bmm(matrix).squeeze(1)
+    if attention.dim() == 3 and matrix.dim() == 3:
+        return attention.bmm(matrix)
+    if matrix.dim() - 1 < attention.dim():
+        expanded_size = list(matrix.size())
+        for i in range(attention.dim() - matrix.dim() + 1):
+            matrix = matrix.unsqueeze(1)
+            expanded_size.insert(i + 1, attention.size(i + 1))
+        matrix = matrix.expand(*expanded_size)
+    intermediate = attention.unsqueeze(-1).expand_as(matrix) * matrix
+    return intermediate.sum(dim=-2)
+
+def get_mask_from_sequence_lengths(sequence_lengths: torch.Tensor, max_length: int) -> torch.Tensor:
+    # (batch_size, max_length)
+    ones = sequence_lengths.new_ones(sequence_lengths.size(0), max_length)
+    range_tensor = ones.cumsum(dim=1)
+    return (sequence_lengths.unsqueeze(1) >= range_tensor).long()
 
 
 def cuda_benchmark(func, *args, **kwargs):
@@ -136,11 +155,9 @@ class Energy(nn.Module):
 
 class MonotonicAttention(nn.Module):
     def __init__(self,
-                 enc_dim: int,
-                 dec_dim: int,
-                 att_dim: int,
+                 dim: int,
                  temperature: float = 1.0,
-                 num_head: int = 1,
+                 init_r: float = -0.1,
                  dirac_at_first_step: bool = True):
         """
         [Monotonic Attention] from
@@ -149,34 +166,37 @@ class MonotonicAttention(nn.Module):
         """
 
         super().__init__()
+        self.temperature = temperature
         self._dirac_at_first_step = dirac_at_first_step
-        self.monotonic_energy = Energy(enc_dim, dec_dim, att_dim)
-        self.prev_att = None
+        self.b = nn.Parameter(torch.Tensor(dim).normal_())
+
+        self.v = nn.utils.weight_norm(nn.Linear(dim, 1))
+        self.v.weight_g = nn.Parameter(torch.Tensor([1 / dim]).sqrt())
+
+        self.r = nn.Parameter(torch.Tensor([init_r]))
         self.reset_mem()
 
     def reset_mem(self):
         # Reset mask
         self.mask = None
         self.k_len = None
-        self.monotonic_energy.set_mask(self.mask)
+        self.prev_att = None
 
     def compute_mask(self, k_len):
-        # Make the mask for padded states
         self.k_len = k_len
-        bs = len(k_len)
-        ts = max(k_len)
-        self.mask = np.zeros((bs, self.num_head, ts))
-        for idx, sl in enumerate(k_len):
-            self.mask[idx, :, sl:] = 1  # ToDo: more elegant way?
-        self.mask = torch.from_numpy(self.mask).to(
-            k_len.device, dtype=torch.bool).view(-1, ts)  # BNxT
-        self.monotonic_energy.set_mask(self.mask)
+        self.mask = get_mask_from_sequence_lengths(k_len, max(k_len)).bool()
 
     def gaussian_noise(self, tensor):
         """Additive gaussian nosie to encourage discreteness"""
         return tensor.new_empty(tensor.size()).normal_()
 
-    def soft_recursive(self, decoder_h, key, encoder_outputs):
+    def _attend(self, query, key):
+        energy = self.tanh(query.unsqueeze(1) + key + self.b)  # BNxD * BNxDxT = BNxT
+        energy = self.v(energy).squeeze(-1) + self.r
+        energy = energy.masked_fill(~self.mask, -np.inf)
+        return energy
+
+    def recursive(self, decoder_h, key, encoder_outputs):
         """
         Soft monotonic attention (Train)
         Args:
@@ -188,13 +208,12 @@ class MonotonicAttention(nn.Module):
         """
         batch_size, sequence_length, _ = encoder_outputs.size()
         end_mask = self.mask * \
-            F.pad((1 - self.mask), pad=(0, 1), value=1.)[:, 1:]
+            F.pad(~self.mask, pad=(0, 1), value=1.)[:, 1:]
 
-        monotonic_energy = self.monotonic_energy(
-            decoder_h, key, encoder_outputs)
-        p_select = F.sigmoid(monotonic_energy +
-                             self.gaussian_noise(monotonic_energy))
-        p_select = torch.where(end_mask.byte(), end_mask, p_select)
+        energy = self._attend(decoder_h, key)
+        p_select = torch.sigmoid(energy +
+                             self.gaussian_noise(energy))
+        p_select = torch.where(end_mask, end_mask.float(), p_select)
 
         shifted_1mp_choose_i = F.pad(
             1 - p_select[:, :-1], pad=(1, 0, 0, 0), value=1.0)
@@ -217,8 +236,6 @@ class MonotonicAttention(nn.Module):
                 alpha_div_ps.append(alpha_div_p)
             alpha = p_select * torch.stack(alpha_div_ps, -1)
 
-        self.prev_att = alpha
-
         return alpha
 
     def soft(self, decoder_h, key, encoder_outputs):
@@ -233,13 +250,12 @@ class MonotonicAttention(nn.Module):
         """
         batch_size, sequence_length, _ = encoder_outputs.size()
         end_mask = self.mask * \
-            F.pad((1 - self.mask), pad=(0, 1), value=1.)[:, 1:]
+            F.pad(~self.mask, pad=(0, 1), value=1.)[:, 1:]
 
-        monotonic_energy = self.monotonic_energy(
-            decoder_h, key, encoder_outputs)
-        p_select = F.sigmoid(monotonic_energy +
-                             self.gaussian_noise(monotonic_energy))
-        p_select = torch.where(end_mask.byte(), end_mask, p_select)
+        energy = self._attend(decoder_h, key)
+        p_select = torch.sigmoid(energy +
+                             self.gaussian_noise(energy))
+        p_select = torch.where(end_mask, end_mask.float(), p_select)
 
         # cumprod_1_minus_p = cumprod(1 - p_select, dim=-1, exclusive=True)
         if self.prev_att is None:
@@ -253,8 +269,6 @@ class MonotonicAttention(nn.Module):
 
         else:
             alpha = soft_efficient(p_select, self.prev_att)
-
-        self.prev_att = alpha
 
         return alpha
 
@@ -270,23 +284,21 @@ class MonotonicAttention(nn.Module):
         """
 
         batch_size, sequence_length, _ = encoder_outputs.size()
-
         if self.prev_att is None and self._dirac_at_first_step:
             # First iteration => alpha = [1, 0, 0 ... 0]
-            self.prev_att = decoder_h.new_zeros(batch_size, sequence_length)
-            self.prev_att = decoder_h.new_ones(batch_size)
+            attention = decoder_h.new_zeros(batch_size, sequence_length)
+            attention[:, 0] = decoder_h.new_ones(batch_size)
         else:
             # TODO: Linear Time Decoding
             # It's not clear if authors' TF implementation decodes in linear time.
             # https://github.com/craffel/mad/blob/master/example_decoder.py#L235
             # They calculate energies for whole encoder outputs
             # instead of scanning from previous attended encoder output.
-            monotonic_energy = self.monotonic_energy(
-                decoder_h, key, encoder_outputs)
+            energy = self._attend(decoder_h, key)
 
             # Hard Sigmoid
             # Attend when monotonic energy is above threshold (Sigmoid > 0.5)
-            above_threshold = (monotonic_energy > 0).float()
+            above_threshold = (energy > 0).float()
             if self.prev_att is None:
                 p_select = above_threshold
             else:
@@ -297,36 +309,40 @@ class MonotonicAttention(nn.Module):
             # Not attended => attend at last encoder output
             # Assume that encoder outputs are not padded
             end_mask = self.mask * \
-                F.pad((1 - self.mask), pad=(0, 1), value=1.)[:, 1:]
+                F.pad(~self.mask, pad=(0, 1), value=1.)[:, 1:]
 
             attended = attention.sum(dim=1)
             attention.masked_fill_(
-                (end_mask * (1 - attended.unsqueeze(-1))).byte(), 1.0)
+                (end_mask.float() * (1 - attended.unsqueeze(-1))).bool(), 1.0)
 
             # Ex)
             # p_select                        = [0, 0, 0, 1, 1, 0, 1, 1]
             # 1 - p_select                    = [1, 1, 1, 0, 0, 1, 0, 0]
             # exclusive_cumprod(1 - p_select) = [1, 1, 1, 1, 0, 0, 0, 0]
             # attention: product of above     = [0, 0, 0, 1, 0, 0, 0, 0]
-        self.prev_att = attention
+
         return attention
 
     @overrides
-    def forward(self, q, k, v, mode="soft"):
+    def forward(self, q, k, v, mode="soft", output_summary=True):
+        mode = "soft" if self.training else "hard"
         if mode not in ["soft", "recursive", "hard"]:
             raise ValueError("Invalid forward mode {} for attention; \
                 accept only soft and hard mode".format(mode))
         att_func = {"soft": self.soft,
                     "recursive": self.recursive, "hard": self.hard}
-        return att_func[mode](q, k, v)
+        attention = att_func[mode](q, k, v)
+        self.prev_att = attention
+        if output_summary:
+            return weighted_sum(v, attention), attention.unsqueeze(1)
+        else:
+            return attention
 
 
 class MoChA(nn.Module):
     def __init__(self,
                  chunk_size: int,
-                 enc_dim: int,
-                 dec_dim: int,
-                 att_dim: int,
+                 dim: int,
                  temperature: float = 1.0,
                  num_head: int = 1,
                  dirac_at_first_step: bool = False) -> None:
@@ -336,13 +352,14 @@ class MoChA(nn.Module):
         https://openreview.net/forum?id=Hko85plCW
         """
         super().__init__()
-        self._monotonic_attention = MonotonicAttention(enc_dim, dec_dim, att_dim,
-                                                       temperature, num_head, dirac_at_first_step)
+        self._monotonic_attention = MonotonicAttention(dim, temperature, init_r=-0.1, dirac_at_first_step)
         self.num_head = num_head
+        assert num_head == 2, "MoChA requires exactly two heads"
         self.chunk_size = chunk_size
-        self.chunk_energy = Energy(enc_dim, dec_dim, att_dim)
         self.unfold = nn.Unfold(kernel_size=(self.chunk_size, 1))
-        self.softmax = nn.Softmax(dim=-1)
+        self._linear = nn.Linear(dim, 1, bias=False)
+        self.b = nn.Parameter(torch.Tensor(dim).normal_())
+
         self.reset_mem()
 
     def reset_mem(self):
@@ -352,22 +369,13 @@ class MoChA(nn.Module):
         self._monotonic_attention.reset_mem()
 
     def compute_mask(self, k_len):
-        # Make the mask for padded states
         self.k_len = k_len
-        bs = len(k_len)
-        ts = max(k_len)
-        self.mask = np.zeros((bs, self.num_head, ts))
-        for idx, sl in enumerate(k_len):
-            self.mask[idx, :, sl:] = 1  # ToDo: more elegant way?
-        self.mask = torch.from_numpy(self.mask).to(
-            k_len.device, dtype=torch.bool).view(-1, ts)  # BNxT
+        self.mask = get_mask_from_sequence_lengths(k_len, max(k_len)).bool()
         self._monotonic_attention.compute_mask(k_len)
 
     def my_soft(self, emit_probs, chunk_energy):
         """
-        PyTorch version of stable_chunkwise_attention in author's TF Implementation:
-        https://github.com/craffel/mocha/blob/master/Demo.ipynb.
-        Compute chunkwise attention distribution stably by subtracting logit max.
+        More readable version than stable_soft. Might be slower.
         """
         batch_size, _ = emit_probs.size()
         framed_chunk_energy = frame(
@@ -375,7 +383,7 @@ class MoChA(nn.Module):
 
         chunk_probs = F.softmax(framed_chunk_energy, dim=-1)
 
-        non_inf_mask = 1 - (framed_chunk_energy == float("-inf"))
+        non_inf_mask = ~((framed_chunk_energy == float("-inf")).bool())
         chunk_probs = torch.where(
             non_inf_mask, chunk_probs, non_inf_mask.float())
 
@@ -421,6 +429,7 @@ class MoChA(nn.Module):
 
     def soft(self, alpha, u):
         """
+        Fast, potentially numerically unstable.
         Args:
             alpha [batch_size, sequence_length]: emission probability in monotonic attention
             u [batch_size, sequence_length]: chunk energy
@@ -464,8 +473,13 @@ class MoChA(nn.Module):
 
         # mask '-inf' energy before softmax
         masked_energy = chunk_energy.masked_fill_(
-            (1 - mask).byte(), -float('inf'))
+            (1 - mask).bool(), -float('inf'))
         return masked_energy
+
+    def _attend(self, query, key):
+        energy = self._linear(torch.tanh(query.unsqueeze(1) + key + self.b)).squeeze(-1)
+        energy = energy.masked_fill(~self.mask, -np.inf)
+        return energy
 
     @overrides
     def forward(self, q, k, v):
@@ -489,59 +503,53 @@ class MoChA(nn.Module):
         """
         mode = "soft" if self.training else "hard"
 
-        chunk_energy = self.chunk_energy(q, k, v)
-        monotonic_attention = self._monotonic_attention(q, k, v, mode=mode)
+        batch_size_num_head, seq_len, _ = k.shape
+        batch_size = batch_size_num_head // self.num_head
+        q = q.view(batch_size, self.num_head, -1)
+        k = k.view(batch_size, self.num_head, seq_len, -1)
+        v = v.view(batch_size, self.num_head, seq_len, -1)
+        energy = self._attend(q[:, 0], k[:, 0])
+        monotonic_attention = self._monotonic_attention(q[:, 1], k[:, 1], v[:, 1],
+                                                        mode=mode, output_summary=False)
         if mode == "soft":
             chunkwise_attention = self.my_soft(
-                monotonic_attention, chunk_energy)
+                monotonic_attention, energy)
 
         elif mode == "hard":
             masked_energy = self.hard(
-                monotonic_attention, chunk_energy)
+                monotonic_attention, energy)
             chunkwise_attention = F.softmax(masked_energy, dim=-1)
             chunkwise_attention.masked_fill_(
                 chunkwise_attention != chunkwise_attention,
                 0)  # a trick to replace nan value with 0
-        output = torch.bmm(chunkwise_attention, v).squeeze(1)
-        return output, chunkwise_attention
+        output = weighted_sum(v[:, 0], chunkwise_attention)
+        return output, chunkwise_attention.unsqueeze(1)
 
 
-class MILk(MonotonicAttention):
+class MILk(nn.Module):
     def __init__(self,
-                 enc_dim: int,
-                 dec_dim: int,
-                 att_dim: int) -> None:
-        """
-        [Monotonic Chunkwise Attention] from
-        "Monotonic Chunkwise Attention" (ICLR 2018)
-        https://openreview.net/forum?id=Hko85plCW
-        """
-        super().__init__(enc_dim, dec_dim, att_dim)
-        self.chunk_energy = Energy(enc_dim, dec_dim, att_dim)
+                 dim: int,
+                 temperature: float = 1.0,
+                 num_head: int = 1,
+                 dirac_at_first_step: bool = False) -> None:
+        super().__init__()
+        self._monotonic_attention = MonotonicAttention(dim, temperature, dirac_at_first_step)
+        self.num_head = num_head
+        assert num_head == 2, "MILk requires exactly two heads"
+        self.unfold = nn.Unfold(kernel_size=(self.chunk_size, 1))
+        self._linear = nn.Linear(dim, 1, bias=True)
+        self.reset_mem()
 
-    @overrides
-    def forward(self, encoder_outputs, decoder_h, previous_attention=None, mode="soft"):
-        if mode not in ["soft", "hard"]:
-            raise ValueError("Invalid forward mode {} for attention; \
-                accept only soft and hard mode".format(mode))
-        if mode == "soft":
+    def reset_mem(self):
+        # Reset mask
+        self.mask = None
+        self.k_len = None
+        self._monotonic_attention.reset_mem()
 
-            alpha = super()(encoder_outputs, decoder_h, previous_attention, mode="soft")
-            chunk_energy = self.chunk_energy(encoder_outputs, decoder_h)
-            beta = self.soft(alpha, chunk_energy)
-            return alpha, beta
-
-        elif mode == "hard":
-            monotonic_attention = super()(encoder_outputs, decoder_h,
-                                          previous_attention, mode="hard")
-            chunk_energy = self.chunk_energy(encoder_outputs, decoder_h)
-            masked_energy = self.hard(
-                monotonic_attention, chunk_energy)
-            chunkwise_attention = F.softmax(masked_energy, dim=-1)
-            chunkwise_attention.masked_fill_(
-                chunkwise_attention != chunkwise_attention,
-                0)  # a trick to replace nan value with 0
-            return monotonic_attention, chunkwise_attention
+    def compute_mask(self, k_len):
+        self.k_len = k_len
+        self.mask = get_mask_from_sequence_lengths(k_len, max(k_len)).bool()
+        self._monotonic_attention.compute_mask(k_len)
 
     def soft(self, emit_probs, chunk_energy):
         """
@@ -563,11 +571,58 @@ class MILk(MonotonicAttention):
         Return:
             masked_energy [batch_size, sequence_length]
         """
-        batch_size, sequence_length = monotonic_attention.size()
-
         mask = fliped_cumsum(monotonic_attention)
 
         # mask '-inf' energy before softmax
         masked_energy = chunk_energy.masked_fill_(
-            (1 - mask).byte(), -float('inf'))
+            ~mask, -float('inf'))
         return masked_energy
+
+    def _attend(self, query, key):
+        energy = self._linear(torch.tanh(query.unsqueeze(1) + key)).squeeze(-1)
+        energy = energy.masked_fill(~self.mask, -np.inf)
+        return energy
+
+    @overrides
+    def forward(self, q, k, v):
+        """
+        Soft monotonic chunkwise attention (Train)
+        Args:
+            encoder_outputs [batch_size, sequence_length, enc_dim]
+            decoder_h [batch_size, dec_dim]
+            previous_alpha [batch_size, sequence_length]
+        Return:
+            alpha [batch_size, sequence_length]
+            beta [batch_size, sequence_length]
+        Hard monotonic chunkwise attention (Test)
+        Args:
+            encoder_outputs [batch_size, sequence_length, enc_dim]
+            decoder_h [batch_size, dec_dim]
+            previous_attention [batch_size, sequence_length]
+        Return:
+            monotonic_attention [batch_size, sequence_length]: hard alpha
+            chunkwise_attention [batch_size, sequence_length]: hard beta
+        """
+        mode = "soft" if self.training else "hard"
+
+        batch_size_num_head, seq_len, _ = k.shape
+        batch_size = batch_size_num_head // self.num_head
+        q = q.view(batch_size, self.num_head, -1)
+        k = k.view(batch_size, self.num_head, seq_len, -1)
+        v = v.view(batch_size, self.num_head, seq_len, -1)
+        energy = self._attend(q[:, 0], k[:, 0])
+        monotonic_attention = self._monotonic_attention(q[:, 1], k[:, 1], v[:, 1],
+                                                        mode=mode, output_summary=False)
+        if mode == "soft":
+            chunkwise_attention = self.soft(
+                monotonic_attention, energy)
+
+        elif mode == "hard":
+            masked_energy = self.hard(
+                monotonic_attention, energy)
+            chunkwise_attention = F.softmax(masked_energy, dim=-1)
+            chunkwise_attention.masked_fill_(
+                chunkwise_attention != chunkwise_attention,
+                0)  # a trick to replace nan value with 0
+        output = weighted_sum(v[:, 0], chunkwise_attention)
+        return output, chunkwise_attention.unsqueeze(1)

@@ -9,6 +9,7 @@ from torch.nn.utils.rnn import pack_padded_sequence,pad_packed_sequence
 
 from src.util import init_weights, init_gate
 from src.module import VGGExtractor, RNNLayer, ScaleDotAttention, LocationAwareAttention
+from src.attention import MonotonicAttention, MoChA, MILk
 
 class ASR(nn.Module):
     ''' ASR model, including Encoder/Decoder(s)'''
@@ -201,7 +202,7 @@ class Attention(nn.Module):
                 Context vector                     with shape [batch size, encoder feature dimension]
                 (i.e. weighted (by attention score) sum of all timesteps T's feature) '''
     def __init__(self, v_dim, q_dim, mode, dim, num_head, temperature, v_proj,
-                 loc_kernel_size, loc_kernel_num):
+                 loc_kernel_size, loc_kernel_num, chunk_size):
         super(Attention,self).__init__()
 
         # Setup
@@ -220,6 +221,12 @@ class Attention(nn.Module):
         # Attention
         if self.mode == 'dot':
             self.att_layer = ScaleDotAttention(temperature, self.num_head)
+        elif self.mode == 'mono':
+            self.att_layer = MonotonicAttention(dim, temperature)
+        elif self.mode == 'mocha':
+            self.att_layer = MoChA(chunk_size, dim, temperature, num_head)
+        elif self.mode == "milk":
+            self.att_layer = MILk(dim, temperature, num_head)
         elif self.mode == 'loc':
             self.att_layer = LocationAwareAttention(loc_kernel_size, loc_kernel_num, dim, num_head, temperature)
         else:
@@ -268,7 +275,7 @@ class Attention(nn.Module):
 
         # Calculate attention    
         context, attn = self.att_layer(query, self.key, self.value)
-        if self.num_head>1:
+        if self.num_head>1 and not isinstance(self.att_layer, MoChA):
             context = context.view(bs,self.num_head*self.v_dim)    # BNxD  -> BxND
             context = self.merge_head(context) # BxD
         
