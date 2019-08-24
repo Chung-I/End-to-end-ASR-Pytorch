@@ -138,12 +138,15 @@ class Trainer(Solver):
 
                 # Compute all objectives
                 total_loss = 0
-                if ctc_output is not None:
-                    if self.paras.ctc_backend =='cudnn':
+                if ctc_output is not None and torch.all(txt_len.cpu() < encode_len):
+                    if self.paras.ctc_backend =='cudnn' and \
+                        torch.all(encode_len == ctc_output.size(1)) and \
+                        torch.all(txt_len <= 256):
                         ctc_loss = self.ctc_loss(ctc_output.transpose(0,1), 
-                                                 txt.to_sparse().values().to(device=self.device,dtype=torch.int32),
-                                                 encode_len.to(device=self.device,dtype=torch.int32),
-                                                 txt_len.to(device=self.device,dtype=torch.int32))
+                                                 txt.to_sparse().values().\
+                                                     to(device='cpu', dtype=torch.int32),
+                                                 encode_len.tolist(),
+                                                 txt_len.tolist())
                     else:
                         ctc_loss = self.ctc_loss(ctc_output.transpose(0,1), txt, encode_len, txt_len)
                     total_loss += ctc_loss*self.asr_model.ctc_weight
