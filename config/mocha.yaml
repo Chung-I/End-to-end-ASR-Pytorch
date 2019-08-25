@@ -53,7 +53,7 @@ model:                                     # Model architecture
     temperature: 0.5                        # scaling factor for attention
     loc_kernel_size: 100                   # just for mode=='loc'
     loc_kernel_num: 10 
-    chunk_size: 3
+    chunk_size: 6
   decoder:
     module: 'LSTM'                         # 'LSTM'/'GRU'/'Transformer'
     dim: 320

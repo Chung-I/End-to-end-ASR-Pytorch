@@ -157,8 +157,8 @@ class MonotonicAttention(nn.Module):
     def __init__(self,
                  dim: int,
                  temperature: float = 1.0,
-                 init_r: float = -0.1,
-                 dirac_at_first_step: bool = True):
+                 dirac_at_first_step: bool = False,
+                 init_r: float = -0.1):
         """
         [Monotonic Attention] from
         "Online and Linear-Time Attention by Enforcing Monotonic Alignment" (ICML 2017)
@@ -191,7 +191,7 @@ class MonotonicAttention(nn.Module):
         return tensor.new_empty(tensor.size()).normal_()
 
     def _attend(self, query, key):
-        energy = self.tanh(query.unsqueeze(1) + key + self.b)  # BNxD * BNxDxT = BNxT
+        energy = torch.tanh(query.unsqueeze(1) + key + self.b)  # BNxD * BNxDxT = BNxT
         energy = self.v(energy).squeeze(-1) + self.r
         energy = energy.masked_fill(~self.mask, -np.inf)
         return energy
@@ -284,7 +284,7 @@ class MonotonicAttention(nn.Module):
         """
 
         batch_size, sequence_length, _ = encoder_outputs.size()
-        if self.prev_att is None and self._dirac_at_first_step:
+        if False: #self.prev_att is None  and self._dirac_at_first_step:
             # First iteration => alpha = [1, 0, 0 ... 0]
             attention = decoder_h.new_zeros(batch_size, sequence_length)
             attention[:, 0] = decoder_h.new_ones(batch_size)
@@ -325,7 +325,7 @@ class MonotonicAttention(nn.Module):
 
     @overrides
     def forward(self, q, k, v, mode="soft", output_summary=True):
-        mode = "soft" if self.training else "hard"
+        mode = "recursive" if self.training else "hard"
         if mode not in ["soft", "recursive", "hard"]:
             raise ValueError("Invalid forward mode {} for attention; \
                 accept only soft and hard mode".format(mode))
@@ -352,7 +352,7 @@ class MoChA(nn.Module):
         https://openreview.net/forum?id=Hko85plCW
         """
         super().__init__()
-        self._monotonic_attention = MonotonicAttention(dim, temperature, init_r=-0.1, dirac_at_first_step)
+        self._monotonic_attention = MonotonicAttention(dim, temperature, dirac_at_first_step)
         self.num_head = num_head
         assert num_head == 2, "MoChA requires exactly two heads"
         self.chunk_size = chunk_size
@@ -502,7 +502,6 @@ class MoChA(nn.Module):
             chunkwise_attention [batch_size, sequence_length]: hard beta
         """
         mode = "soft" if self.training else "hard"
-
         batch_size_num_head, seq_len, _ = k.shape
         batch_size = batch_size_num_head // self.num_head
         q = q.view(batch_size, self.num_head, -1)
@@ -533,7 +532,8 @@ class MILk(nn.Module):
                  num_head: int = 1,
                  dirac_at_first_step: bool = False) -> None:
         super().__init__()
-        self._monotonic_attention = MonotonicAttention(dim, temperature, dirac_at_first_step)
+        self._monotonic_attention = MonotonicAttention(dim, temperature,
+                                                       dirac_at_first_step=dirac_at_first_step)
         self.num_head = num_head
         assert num_head == 2, "MILk requires exactly two heads"
         self.unfold = nn.Unfold(kernel_size=(self.chunk_size, 1))

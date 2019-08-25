@@ -1,5 +1,6 @@
 import os
 import math
+from itertools import groupby
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
@@ -12,7 +13,7 @@ from src.util import Timer, human_format, cal_er
 GRAD_CLIP = 5.0
 PROGRESS_STEP = 100      # Std. output refresh freq.
 ADDITIONAL_DEV_STEP = 10 # Additional decode steps for objective validation
-DEV_N_EXAMPLE = 4        # Number of examples (alignment/text) to show in tensorboard
+DEV_N_EXAMPLE = 10        # Number of examples (alignment/text) to show in tensorboard
 
 class Solver():
     ''' Super class Solver for all kinds of tasks'''
@@ -218,7 +219,7 @@ class Trainer(Solver):
                 self.write_log('att_align{}'.format(i),att_align[i,0,:,:].cpu().unsqueeze(0))
                 self.write_log('att_text{}'.format(i),self.tokenizer.decode(att_output[i].argmax(dim=-1).tolist()))
             if ctc_output is not None:
-                self.write_log('ctc_text{}'.format(i),self.tokenizer.decode(ctc_output[i].argmax(dim=-1).tolist()))
+                self.write_log('ctc_text{}'.format(i),self.tokenizer.decode([k for k, g in groupby(ctc_output[i].argmax(dim=-1).tolist()) if k != 0]))
 
         # Resume training
         self.asr_model.train()
