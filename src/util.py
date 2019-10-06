@@ -145,3 +145,50 @@ def load_embedding(text_encoder, embedding_filepath):
             embeddings[text_encoder.unk_idx] /= unk_count
 
         return embeddings
+
+def freq_loss(pred, label, sample_rate, n_mels, loss, differential_loss, emphasize_linear_low, p=1):
+    """
+    Args:
+        pred: model output
+        label: target
+        loss: `l1` or `mse`
+        differential_loss: use differential loss or not, see here `https://arxiv.org/abs/1909.10302`
+        emphasize_linear_low: emphasize the low-freq. part of linear spectrogram or not
+        
+    Return:
+        loss
+    """    
+    # ToDo : Tao 
+    # pred -> BxTxD predicted mel-spec or linear-spec
+    # label-> same shape
+    # return loss for loss.backward()
+    if loss == 'l1':
+        criterion = torch.nn.functional.l1_loss
+    elif loss == 'mse':
+        criterion = torch.nn.functional.mse_loss
+    else:
+        raise NotImplementedError
+
+    cutoff_freq = 3000
+
+    # Repeat for postnet
+    _, chn, _, dim = pred.shape
+    label = label.unsqueeze(1).repeat(1,chn,1,1)
+
+    loss_all = criterion(p * pred, p * label)
+
+    if dim != n_mels and emphasize_linear_low:
+        # Linear
+        n_priority_freq = int(dim * (cutoff_freq / (sample_rate/2)))
+        pred_low = pred[:, :, :, :n_priority_freq]
+        label_low = label[:, :, :, :n_priority_freq]
+        loss_low = criterion(p * pred_low, p * label_low)
+        #loss_low = torch.nn.functional.mse_loss(p * pred_low, p * label_low)
+        loss_all = 0.5 * loss_all + 0.5 * loss_low
+
+    if differential_loss:
+        pred_diff = pred[:, :, 1:, :] - pred[:, :, :-1, :]
+        label_diff = label[:, :, 1:, :] - label[:, :, :-1, :]
+        loss_all += 0.5 * criterion(p * pred_diff, p * label_diff)
+
+    return loss_all

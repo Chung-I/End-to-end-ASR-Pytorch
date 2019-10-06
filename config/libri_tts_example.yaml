@@ -6,37 +6,37 @@ data:
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 
     batch_size: 24
-  audio:
-    num_freq: 1025
-    num_mels: 80
-    frame_length_ms: 50
-    frame_shift_ms: 12.5
-    preemphasis_coeff: 0.97
-    sample_rate: 16000
-    use_linear: False                      ### Return Linear spectrogram
-    # augmentation
-    snr_range: [10, 100]
-    time_stretch_range: [0.9, 1.1]
-    inverse_prob: 0.0
+
+  audio:                                  # Attributes of audio feature
+    feat_type: 'fbank'
+    feat_dim:  80
+    apply_cmvn: True
+    delta_order: 0                        # 0: do nothing, 1: add delta, 2: add delta and accelerate
+    delta_window_size: 2
+    frame_length: 25                      # ms
+    frame_shift: 10                       # ms
+    dither: 0                             # random dither audio, 0: no dither
+
   text:
-    mode: 'character'                       # 'character'/'word'/'subword'
-    vocab_file: 'tests/sample_data/character.vocab'
+    mode: 'subword'                       # 'character'/'word'/'subword'
+    vocab_file: 'tests/sample_data/subword.model'
 
 hparas:                                   # Experiment hyper-parameters
   valid_step: 5000
   curriculum: 0
   max_step: 350001
   tf_start: 1.0
-  tf_end: 0.0
+  tf_end: 1.0
   tf_step: 500000
-  optimizer: 'Adadelta'
-  lr: 1.0
-  lr_scheduler: 'fixed'                   # 'fixed'/'warmup'/'decay'
+  optimizer: 'Adam'
+  lr: 0.001
+  lr_scheduler: 'decay'                   # 'fixed'/'warmup'/'decay'
+  freq_loss_type: 'mse'                         # 'l1'/'mse'
   
 model:                                    # Model architecture
-  ctc_weight: 1.0                         # Weight for CTC loss
+  ctc_weight: 0.0                         # Weight for CTC loss
   encoder:
-    vgg: False                             # 4x reduction on time feature extraction
+    vgg: True                             # 4x reduction on time feature extraction
     module: 'LSTM'                        # 'LSTM'/'GRU'/'Transformer'
     bidirection: True
     dim: [320,320,320,320,320]
@@ -58,4 +58,26 @@ model:                                    # Model architecture
     dim: 320
     layer: 1
     dropout: 0
-    #layer_norm: False
+  tts:
+    encoder:
+      layer_num: 4
+      enc_embed_dim: 320
+    decoder:
+      n_frames_per_step: 5
+      prenet_dim: 128
+      prenet_dropout: 0.5
+      query_rnn_dim: 1024
+      dec_rnn_dim: 1024
+      query_dropout: 0.1
+      dec_dropout: 0.1
+      attn_dim: 256
+      n_location_filters: 32
+      location_kernel_size: 31
+      loc_aware: True
+      use_summed_weights: True
+      drop_dec_in: 0.0
+    postnet:
+      postnet_embed_dim: 512
+      postnet_kernel_size: 5
+      postnet_n_conv: 5
+      postnet_dropout: 0.5

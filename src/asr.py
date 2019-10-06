@@ -35,14 +35,16 @@ class ASR(nn.Module):
 
         # Init
         self.apply(init_weights)
-        for l in range(self.decoder.layer):
-            bias = getattr(self.decoder.layers,'bias_ih_l{}'.format(l))
-            bias = init_gate(bias)
+        if self.enable_att:
+            for l in range(self.decoder.layer):
+                bias = getattr(self.decoder.layers,'bias_ih_l{}'.format(l))
+                bias = init_gate(bias)
 
     def set_state(self, prev_state, prev_attn):
         ''' Setting up all memory states for beam decoding'''
-        self.decoder.set_state(prev_state)
-        self.attention.set_mem(prev_attn)
+        if self.enable_att:
+            self.decoder.set_state(prev_state)
+            self.attention.set_mem(prev_attn)
 
     def create_msg(self):
         # Messages for user
@@ -76,7 +78,8 @@ class ASR(nn.Module):
         dec_state = [] if get_dec_state else None
 
         # Encode
-        encode_feature,encode_len = self.encoder(audio_feature,feature_len)
+        enc_hiddens = self.encoder(audio_feature,feature_len)
+        encode_feature, encode_len = enc_hiddens[-1]
 
         # CTC based decoding
         if self.enable_ctc:
@@ -134,7 +137,7 @@ class ASR(nn.Module):
             if get_dec_state:
                 dec_state = torch.stack(dec_state,dim=1)
 
-        return ctc_output, encode_len, att_output, att_seq, dec_state
+        return ctc_output, encode_len, enc_hiddens, att_output, att_seq, dec_state
 
 
 class Decoder(nn.Module):
@@ -323,6 +326,8 @@ class Encoder(nn.Module):
         self.layers = nn.ModuleList(module_list)
 
     def forward(self,input_x,enc_len):
+        outputs = []
         for _, layer in enumerate(self.layers):
             input_x,enc_len = layer(input_x,enc_len)
-        return input_x,enc_len
+            outputs.append((input_x, enc_len))
+        return outputs

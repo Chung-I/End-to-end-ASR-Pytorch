@@ -121,24 +121,30 @@ class BaseSolver():
             sys.stdout.write("\033[K") # Clear line
             print('[{}] {}'.format(human_format(self.step),msg),end='\r')
     
-    def write_log(self,log_name,log_dict):
+    def write_log(self,log_name,log_value):
         '''
         Write log to TensorBoard
             log_name  - <str> Name of tensorboard variable 
             log_value - <dict>/<array> Value of variable (e.g. dict of losses), passed if value = None
         '''
-        if type(log_dict) is dict:
-            log_dict = {key:val for key, val in log_dict.items() if (val is not None and not math.isnan(val))}
-        if log_dict is None:
+        if type(log_value) is dict:
+            log_value = {key:val for key, val in log_value.items() if (val is not None and not math.isnan(val))}
+        if log_value is None:
             pass
-        elif len(log_dict)>0:
-            if 'align' in log_name or 'spec' in log_name:
-                img, form = log_dict
+        elif len(log_value)>0:
+            # ToDo : support all types of input
+            if 'align' in log_name or 'spec' in log_name or 'hist' in log_name:
+                img, form = log_value
                 self.log.add_image(log_name,img, global_step=self.step, dataformats=form)
+            elif 'code' in log_name:
+                self.log.add_embedding(log_value[0], metadata=log_value[1], tag=log_name, global_step=self.step)
+            elif 'wave' in log_name:
+                signal, sr = log_value
+                self.log.add_audio(log_name, torch.FloatTensor(signal).unsqueeze(0), self.step, sr)
             elif 'text' in log_name or 'hyp' in log_name:
-                self.log.add_text(log_name, log_dict, self.step)
+                self.log.add_text(log_name, log_value, self.step)
             else:
-                self.log.add_scalars(log_name,log_dict,self.step)
+                self.log.add_scalars(log_name,log_value,self.step)
 
     def save_checkpoint(self, f_name, metric, score):
         '''' 

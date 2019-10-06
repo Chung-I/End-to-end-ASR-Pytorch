@@ -1,6 +1,7 @@
 import torch
 from functools import partial
 from src.text import load_text_encoder
+from src.audio import load_audio_transform
 from src.audio import create_transform
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
@@ -119,14 +120,14 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text):
     ''' Prepare dataloader for training/validation'''
 
     # Audio feature extractor
-    audio_transform, feat_dim = create_transform(audio.copy())
+    audio_converter = load_audio_transform(**audio)
     # Text tokenizer
     tokenizer = load_text_encoder(**text)
     # Dataset (in testing mode, tr_set=dv_set, dv_set=tt_set)
     tr_set, dv_set, tr_loader_bs, dv_loader_bs, mode, data_msg = create_dataset(tokenizer,ascending,**corpus)
     # Collect function
-    collect_tr = partial(collect_audio_batch, audio_transform=audio_transform, mode=mode)
-    collect_dv = partial(collect_audio_batch, audio_transform=audio_transform, mode='test')
+    collect_tr = partial(collect_audio_batch, audio_transform=audio_converter.wave_to_feat, mode=mode)
+    collect_dv = partial(collect_audio_batch, audio_transform=audio_converter.wave_to_feat, mode='test')
     # Shuffle/drop applied to training set only
     shuffle = (mode=='train' and not ascending)
     drop_last = shuffle
@@ -137,9 +138,9 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text):
                         num_workers=n_jobs, pin_memory=pin_memory)
     # Messages to show
     data_msg.append('I/O spec.  | Audio feature = {}\t| feature dim = {}\t| Token type = {}\t| Vocab size = {}'\
-                    .format(audio['feat_type'],feat_dim,tokenizer.token_type,tokenizer.vocab_size))
+                    .format(audio_converter.feat_type,audio_converter.feat_dim,tokenizer.token_type,tokenizer.vocab_size))
 
-    return tr_set, dv_set, feat_dim, tokenizer.vocab_size, tokenizer, data_msg
+    return tr_set, dv_set, tokenizer, audio_converter, data_msg
 
 
 def load_textset(n_jobs, use_gpu, pin_memory, corpus, text):

@@ -27,9 +27,11 @@ class Solver(BaseSolver):
 
     def load_data(self):
         ''' Load data for training/validation, store tokenizer and input/output shape'''
-        self.tr_set, self.dv_set, self.feat_dim, self.vocab_size, self.tokenizer, msg = \
+        self.tr_set, self.dv_set, self.tokenizer, self.audio_converter, msg = \
                          load_dataset(self.paras.njobs, self.paras.gpu, self.paras.pin_memory, 
                                       self.curriculum>0, **self.config['data'])
+        self.vocab_size = self.tokenizer.vocab_size
+        self.feat_dim, _ = self.audio_converter.feat_dim                  # ignore linear dim   
         self.verbose(msg)
 
     def set_model(self):
@@ -93,9 +95,9 @@ class Solver(BaseSolver):
 
                 # Forward model
                 # Note: txt should NOT start w/ <sos>
-                ctc_output, encode_len, att_output, att_align, dec_state = \
-                    self.model( feat, feat_len, max(txt_len), tf_rate=tf_rate,
-                                    teacher=txt, get_dec_state=self.emb_reg)
+                ctc_output, encode_len, _, att_output, att_align, dec_state = \
+                    self.model(feat, feat_len, max(txt_len), tf_rate=tf_rate,
+                               teacher=txt, get_dec_state=self.emb_reg)
                 
                 # Plugins
                 if self.emb_reg:
@@ -165,7 +167,7 @@ class Solver(BaseSolver):
 
             # Forward model
             with torch.no_grad():
-                ctc_output, encode_len, att_output, att_align, dec_state = \
+                ctc_output, encode_len, _, att_output, att_align, dec_state = \
                     self.model( feat, feat_len, int(max(txt_len)*self.DEV_STEP_RATIO), 
                                     emb_decoder=self.emb_decoder)
 
@@ -183,7 +185,7 @@ class Solver(BaseSolver):
                     if ctc_output is not None:
                         self.write_log('ctc_text{}'.format(i),self.tokenizer.decode(ctc_output[i].argmax(dim=-1).tolist(),
                                                                                                        ignore_repeat=True))
-        
+
         # Ckpt if performance improves
         for task in ['att','ctc']:
             dev_wer[task] = sum(dev_wer[task])/len(dev_wer[task])

@@ -61,10 +61,10 @@ class CharacterTextEncoder(_BaseTextEncoder):
         vocabs = []
         for t, idx in enumerate(idxs):
             v = self.idx_to_vocab(idx)
-            if idx == self.pad_idx or (ignore_repeat and t > 0 and idx == vocabs[t-1]):
-                continue
-            elif idx == self.eos_idx:
+            if idx == self.eos_idx:
                 break
+            elif idx == self.pad_idx or (ignore_repeat and len(vocabs) > 0 and t > 0 and idx == vocabs[-1]):
+                continue
             else:
                 vocabs.append(v)
         return "".join(vocabs)
