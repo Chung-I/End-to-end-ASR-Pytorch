@@ -1,7 +1,71 @@
+from typing import Tuple
 import torch
 import numpy as np
 import torch.nn as nn
 from torch.nn.utils.rnn import pack_padded_sequence,pad_packed_sequence
+
+
+Nonlinearities = {  # type: ignore
+        "linear": lambda: lambda x: x,
+        "relu": torch.nn.ReLU,
+        "relu6": torch.nn.ReLU6,
+        "elu": torch.nn.ELU,
+        "prelu": torch.nn.PReLU,
+        "leaky_relu": torch.nn.LeakyReLU,
+        "threshold": torch.nn.Threshold,
+        "hardtanh": torch.nn.Hardtanh,
+        "sigmoid": torch.nn.Sigmoid,
+        "tanh": torch.nn.Tanh,
+        "log_sigmoid": torch.nn.LogSigmoid,
+        "softplus": torch.nn.Softplus,
+        "softshrink": torch.nn.Softshrink,
+        "softsign": torch.nn.Softsign,
+        "tanhshrink": torch.nn.Tanhshrink,
+}
+
+class LengthAwareWrapper(nn.Module):
+    def __init__(self, module, pass_through: str = False):
+        super(LengthAwareWrapper, self).__init__()
+        self.module = module
+        self._pass_through = pass_through
+        if not pass_through:
+            self.padding = self.module.padding[0] \
+                if isinstance(self.module.padding, tuple) \
+                else self.module.padding
+
+            self.dilation = self.module.dilation[0] \
+                if isinstance(self.module.dilation, tuple) \
+                else self.module.dilation
+
+            self.kernel_size = self.module.kernel_size[0] \
+                if isinstance(self.module.kernel_size, tuple) \
+                else self.module.kernel_size
+
+            self.stride = self.module.stride[0] \
+                if isinstance(self.module.stride, tuple) \
+                else self.module.stride
+
+    def forward(self, inputs_and_lengths: Tuple[torch.FloatTensor, torch.LongTensor]):
+        # pylint: disable=arguments-differ
+        """
+        Expect inputs of (N, C, T, D) dimension.
+        There's something peculiar here in that we made the padding affects our length
+        only at the start position, so that 2 * self.padding becomes 1 * self.padding.
+        """
+        inputs, lengths = inputs_and_lengths
+        if not self._pass_through:
+            lengths = torch.floor(
+                torch.clamp(
+                    (lengths.float() + 2 * self.padding - self.dilation *
+                     (self.kernel_size - 1) - 1) / self.stride + 1,
+                    1.
+                )
+            ).long()
+        if getattr(self.module, 'forward', None):
+            outputs = self.module.forward(inputs)
+        else:
+            outputs = self.module(inputs)
+        return (outputs, lengths)
 
 # https://github.com/mozilla/TTS/issues/26
 class Prenet(nn.Module):
@@ -547,11 +611,11 @@ class DecoderTaco(nn.Module):
 
 class VGGExtractor(nn.Module):
     ''' VGG extractor for ASR described in https://arxiv.org/pdf/1706.02737.pdf'''
-    def __init__(self,input_dim):
+    def __init__(self, freq_dim, in_channel):
         super(VGGExtractor, self).__init__()
         self.init_dim = 64
         self.hide_dim = 128
-        in_channel,freq_dim,out_dim = self.check_dim(input_dim)
+        out_dim = (freq_dim // 4) * self.hide_dim
         self.in_channel = in_channel
         self.freq_dim = freq_dim
         self.out_dim = out_dim
@@ -595,14 +659,62 @@ class VGGExtractor(nn.Module):
 
     def forward(self,feature,feat_len):
         # Feature shape BSxTxD -> BS x CH(num of delta) x T x D(acoustic feature dim)
-        feature, feat_len = self.view_input(feature,feat_len)
+        #feature, feat_len = self.view_input(feature,feat_len)
         # Foward
+        feat_len = feat_len//4
         feature = self.extractor(feature)
         # BSx128xT/4xD/4 -> BSxT/4x128xD/4
         feature = feature.transpose(1,2)
         #  BS x T/4 x 128 x D/4 -> BS x T/4 x 32D
         feature = feature.contiguous().view(feature.shape[0],feature.shape[1],self.out_dim)
         return feature,feat_len
+
+
+class CNN(nn.Module):
+    def __init__(self, input_size: int, in_channel: int, hidden_channel: int, num_layers: int,
+                 kernel_size: int = 3, stride: int = 2, batch_norm: bool = False,
+                 nonlinearity: str = 'linear'):
+        super(CNN, self).__init__()
+        self._in_channel = in_channel
+        self._hidden_channel = hidden_channel
+        self._kernel_size = kernel_size
+        self._stride = stride
+        self._num_layers = num_layers
+        self._input_size = input_size
+        non_linear = Nonlinearities[nonlinearity]
+        layers = []
+        for l in range(num_layers):
+            in_channel = self._in_channel if l == 0 else self._hidden_channel
+            conv = LengthAwareWrapper(nn.Conv2d(in_channel, self._hidden_channel,
+                                                self._kernel_size, stride=self._stride,
+                                                padding=1))
+            layers.append((f"conv{l}", conv))
+            if batch_norm:
+                bn = LengthAwareWrapper(nn.BatchNorm2d(self._hidden_channel), pass_through=True)
+                layers.append((f"bn{l}", bn))
+            layers.append((f"nonlinear{l}", LengthAwareWrapper(non_linear, pass_through=True)))
+        self.module = nn.Sequential(OrderedDict(layers))
+        strides = [self.module[idx].stride for idx in range(len(self.module))
+                   if hasattr(self.module[idx], "stride")]
+        self._downsample_rate = reduce(lambda x, y: x * y, strides)
+        self.out_dim = self.get_output_dim()
+
+    def get_input_dim(self) -> int:
+        return self._in_channel
+
+    def get_output_dim(self) -> int:
+        return self._hidden_channel * self._input_size // self._downsample_rate
+
+    def is_bidirectional(self) -> bool:
+        return False
+
+    def forward(self, feature, lengths):
+        # Feature shape BSxTxD -> BS x CH(num of delta) x T x D(acoustic feature dim)
+        batch_size, _, _, feat_dim = feature.size()
+        feature, lengths = self.module((feature, lengths))
+        batch_size, _, timesteps, _ = feature.size()
+        feature = feature.permute(0, 2, 1, 3).reshape(batch_size, timesteps, -1)
+        return feature, lengths
 
 
 class RNNLayer(nn.Module):

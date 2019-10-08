@@ -2,6 +2,7 @@ import torch
 import torchaudio
 import numpy as np
 import torch.nn as nn
+import torch.nn.functional as F
 from scipy import signal
 
 import pandas as pd
@@ -66,8 +67,7 @@ class Delta(torch.jit.ScriptModule):
     @torch.jit.script_method
     def forward(self, x):
         # Unsqueeze batch dim
-        x = x.unsqueeze(0)
-        return F.conv2d(x, weight=self.filters, padding=self.padding)[0]
+        return F.conv2d(x, weight=self.filters, padding=self.padding)
 
     # TODO(WindQAQ): find more elegant way to create `scales`
     def _create_filters(self, order, window_size):
@@ -90,7 +90,7 @@ class Delta(torch.jit.ScriptModule):
             padding = (max_len - len(scale)) // 2
             scales[i] = [0] * padding + scale + [0] * padding
 
-        return torch.tensor(scales).unsqueeze(1).unsqueeze(1)
+        return torch.Tensor(scales).unsqueeze(1).unsqueeze(1)
 
     def extra_repr(self):
         return "order={}, window_size={}".format(self.order, self.window_size)

@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from src.module import Encoder, Decoder, Postnet, CBHG, EncoderTaco, DecoderTaco, Linear
+from src.module import Encoder, Decoder, Postnet, CBHG, EncoderTaco, DecoderTaco, Linear, Highway
 
 
 class Tacotron2(nn.Module):
@@ -87,5 +87,33 @@ class Tacotron(nn.Module):
                    .format(self.n_frames_per_step))
         return msg
 
+class FeedForwardTTS(nn.Module):
+    def __init__(self, input_dim, mel_dim, num_layers, ratio):
+        super(FeedForwardTTS, self).__init__()
+        self.ratio = ratio
+        hidden_dim = mel_dim * ratio
+        self.decoder = nn.Sequential(
+            *[nn.Linear(input_dim, hidden_dim), nn.Tanh()],
+            *((num_layers - 1) * [nn.Linear(hidden_dim, hidden_dim),
+                          nn.Tanh()]),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
+    def forward(self, inputs):
+        outputs = self.decoder(inputs)
+        return outputs.reshape(-1, outputs.size(-2) * self.ratio, outputs.size(-1) // self.ratio)
 
+
+class HighwayTTS(nn.Module):
+    def __init__(self, input_dim, mel_dim, num_layers, ratio):
+        super(HighwayTTS, self).__init__()
+        self.ratio = ratio
+        hidden_dim = mel_dim * ratio
+        self.decoder = nn.Sequential(
+            Linear(input_dim, hidden_dim),
+            *((num_layers - 1) * [Highway(hidden_dim, hidden_dim)]),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
+    def forward(self, inputs):
+        outputs = self.decoder(inputs)
+        return outputs.reshape(-1, outputs.size(-2) * self.ratio, outputs.size(-1) // self.ratio)
 

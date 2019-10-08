@@ -2,7 +2,10 @@
 
 Reference: https://www.tensorflow.org/datasets/api_docs/python/tfds/features/text_lib
 """
+import re
 import abc
+
+flatten = lambda l: [item for sublist in l for item in sublist]
 
 BERT_FIRST_IDX = 997  # Replacing the 2 tokens right before english starts as <eos> & <unk>
 BERT_LAST_IDX = 29635 # Drop rest of tokens
@@ -63,7 +66,7 @@ class CharacterTextEncoder(_BaseTextEncoder):
             v = self.idx_to_vocab(idx)
             if idx == self.eos_idx:
                 break
-            elif idx == self.pad_idx or (ignore_repeat and len(vocabs) > 0 and t > 0 and idx == vocabs[-1]):
+            elif idx == self.pad_idx or (ignore_repeat and len(vocabs) > 0 and t > 0 and idx == idxs[t-1]):
                 continue
             else:
                 vocabs.append(v)
@@ -84,6 +87,63 @@ class CharacterTextEncoder(_BaseTextEncoder):
     @property
     def token_type(self):
         return 'character'
+
+    def vocab_to_idx(self, vocab):
+        return self._vocab2idx.get(vocab, self.unk_idx)
+
+    def idx_to_vocab(self, idx):
+        return self._vocab_list[idx]
+
+
+class PhoneTextEncoder(_BaseTextEncoder):
+    def __init__(self, lexicon):
+        self.lexicon = lexicon
+        vocab_list = set()
+        for key, phones in self.lexicon.items():
+            vocab_list.update(phones)
+        self._vocab_list = ["<pad>", "<eos>", "<unk>"] + list(vocab_list)
+        self._vocab2idx = {v: idx for idx, v in enumerate(self._vocab_list)}
+
+    def encode(self, s):
+        # Always strip trailing space, \r and \n
+        s = s.strip("\r\n ")
+        # Space as the delimiter between words
+        words = s.split(" ")
+        nested_phones = [[self.vocab_to_idx(phone) for phone in self.lexicon[word]] for word in words]
+        phones = flatten(nested_phones)
+        # Manually append eos to the end
+        print([self.idx_to_vocab(idx) for idx in phones])
+        return phones + [self.eos_idx]
+
+    def decode(self, idxs, ignore_repeat=False):
+        crop_idx = []
+        for t, idx in enumerate(idxs):
+            if idx == self.eos_idx:
+                break
+            elif idx == self.pad_idx or (ignore_repeat and t > 0 and idx == idxs[t-1]):
+                continue
+            else:
+                crop_idx.append(idx)
+        return " ".join([self.idx_to_vocab(idx) for idx in crop_idx])
+
+    @classmethod
+    def load_from_file(cls, filepath):
+        lexicon = {}
+        with open(filepath) as fp:
+            for line in fp:
+                texts = line[:-1].split()
+                word, phones = texts[0], list(map(lambda s: re.sub('\d+', '', s), texts[1:]))
+                lexicon[word] = phones
+
+        return cls(lexicon)
+
+    @property
+    def vocab_size(self):
+        return len(self._vocab_list)
+
+    @property
+    def token_type(self):
+        return 'phone'
 
     def vocab_to_idx(self, vocab):
         return self._vocab2idx.get(vocab, self.unk_idx)
@@ -226,6 +286,8 @@ def load_text_encoder(mode, vocab_file):
         return SubwordTextEncoder.load_from_file(vocab_file)
     elif mode == "word":
         return WordTextEncoder.load_from_file(vocab_file)
+    elif mode == "phone":
+        return PhoneTextEncoder.load_from_file(vocab_file)
     elif mode.startswith("bert-"):
         return BertTextEncoder.load_from_file(mode)
     else:

@@ -82,7 +82,7 @@ class BaseSolver():
         self.timer.cnt('bw')
         return grad_norm
 
-    def load_ckpt(self):
+    def load_ckpt(self, cont=True):
         ''' Load ckpt if --load option is specified '''
         if self.paras.load:
             # Load weights
@@ -94,9 +94,10 @@ class BaseSolver():
             #    amp.load_state_dict(ckpt['amp'])
             # Load task-dependent items
             if self.mode == 'train':
-                self.step = ckpt['global_step']
-                self.optimizer.load_opt_state_dict(ckpt['optimizer'])
-                self.verbose('Load ckpt from {}, restarting at step {}'.format(self.paras.load,self.step))
+                if cont:
+                    self.step = ckpt['global_step']
+                    self.optimizer.load_opt_state_dict(ckpt['optimizer'])
+                    self.verbose('Load ckpt from {}, restarting at step {}'.format(self.paras.load,self.step))
             else:
                 for k,v in ckpt.items():
                     if type(v) is float:

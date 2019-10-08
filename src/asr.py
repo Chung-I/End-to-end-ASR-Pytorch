@@ -6,11 +6,12 @@ import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 
 from src.util import init_weights, init_gate
-from src.module import VGGExtractor, RNNLayer, ScaleDotAttention, LocationAwareAttention
+from src.module import VGGExtractor, CNN, RNNLayer, ScaleDotAttention, LocationAwareAttention
+from src.audio import Delta
 
 class ASR(nn.Module):
     ''' ASR model, including Encoder/Decoder(s)'''
-    def __init__(self, input_size, vocab_size, ctc_weight, encoder, attention, decoder, emb_drop=0.0):
+    def __init__(self, input_size, vocab_size, ctc_weight, encoder, attention, decoder, emb_drop=0.0, delta=0):
         super(ASR, self).__init__()
 
         # Setup
@@ -20,9 +21,13 @@ class ASR(nn.Module):
         self.enable_ctc = ctc_weight > 0
         self.enable_att = ctc_weight != 1
         self.lm = None
+        self.delta = None
 
+        # Preprosessing
+        if delta > 0:
+            self.delta = Delta(order=delta)
         # Modules
-        self.encoder = Encoder(input_size, **encoder)
+        self.encoder = Encoder(input_size, delta + 1, **encoder)
         if self.enable_ctc:
             self.ctc_layer = nn.Linear(self.encoder.out_dim, vocab_size)
         if self.enable_att:
@@ -73,6 +78,10 @@ class ASR(nn.Module):
             get_dec_state - [bool]  If true, return decoder state [BxLxD] for other purpose
         '''
         # Init
+        audio_feature = audio_feature.unsqueeze(1)
+        if self.delta:
+            audio_feature = self.delta(audio_feature)
+
         bs = audio_feature.shape[0]
         ctc_output, att_output, att_seq = None, None, None
         dec_state = [] if get_dec_state else None
@@ -291,11 +300,11 @@ class Attention(nn.Module):
 class Encoder(nn.Module):
     ''' Encoder (a.k.a. Listener in LAS)
         Encodes acoustic feature to latent representation, see config file for more details.'''
-    def __init__(self, input_size, vgg, module, bidirection, dim, dropout, layer_norm, proj, sample_rate, sample_style):
+    def __init__(self, input_size, in_channel, cnn, module, bidirection, dim, dropout,
+                 layer_norm, proj, sample_rate, sample_style):
         super(Encoder, self).__init__()
 
         # Hyper-parameters checking
-        self.vgg = vgg
         self.sample_rate = 1
         assert len(sample_rate)==len(dropout), 'Number of layer mismatch'
         assert len(dropout)==len(dim), 'Number of layer mismatch'
@@ -306,11 +315,20 @@ class Encoder(nn.Module):
         module_list = []
         input_dim = input_size
 
-        if vgg:
-            vgg_extractor = VGGExtractor(input_size)
+        self.vgg = False
+        if cnn['type'] == 'vgg':
+            self.vgg = True
+            vgg_extractor = VGGExtractor(input_size, in_channel)
             module_list.append(vgg_extractor)
             input_dim = vgg_extractor.out_dim
             self.sample_rate = self.sample_rate*4
+        elif cnn['type'] == 'cnn':
+            cnn.pop('type')
+            cnn_encoder = CNN(input_size, in_channel, **cnn)
+            module_list.append(vgg_extractor)
+            input_dim = cnn_encoder.out_dim
+            self.sample_rate = self.sample_rate*cnn_encoder._downsample_rate
+
 
         if module in ['LSTM','GRU']:
             for l in range(num_layers):

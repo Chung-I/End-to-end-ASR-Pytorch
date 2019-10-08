@@ -1,13 +1,16 @@
 from functools import partial
+import os
+import math
 
 import torch
+import torch.nn as nn
 from src.solver import BaseSolver
 
 from src.asr import ASR
-from src.tts import Tacotron2 as TTS
+from src.tts import FeedForwardTTS, HighwayTTS
 from src.optim import Optimizer
 from src.data import load_dataset
-from src.util import human_format, cal_er, feat_to_fig, freq_loss
+from src.util import human_format, cal_er, feat_to_fig, freq_loss, get_mask_from_sequence_lengths
 
 DEV_N_EXAMPLES = 8 # How many examples to show in tensorboard
 CKPT_STEP = 10000
@@ -18,6 +21,7 @@ class Solver(BaseSolver):
         super().__init__(config,paras,mode)
         # Logger settings
         self.best_wer = {'att':3.0,'ctc':3.0}
+        self.best_tts_loss = float('inf')
         # Curriculum learning affects data loader
         self.curriculum = self.config['hparas']['curriculum']
 
@@ -43,11 +47,21 @@ class Solver(BaseSolver):
     def set_model(self):
         ''' Setup ASR model and optimizer '''
         # Model
-        self.asr = ASR(self.feat_dim, self.vocab_size, **self.config['model']).to(self.device)
-        self.tts = TTS(self.feat_dim, None, self.config['tts'])
-        self.layer_num = self.config['tts']['encoder']['layer_num']
-        self.verbose(self.asr.create_msg())
-        self.verbose(self.tts.create_msg())
+        self.model = ASR(self.feat_dim, self.vocab_size, **self.config['model']).to(self.device)
+        # self.tts = TTS(self.feat_dim, None, self.config['tts'])
+        self.layer_num = self.config['tts']['layer_num']
+
+        if self.config['tts']['type'] == "linear":
+            self.tts = FeedForwardTTS(self.model.encoder.layers[self.layer_num].out_dim,
+                                      self.feat_dim, self.config['tts']['num_layers'],
+                                      self.model.encoder.sample_rate).to(self.device)
+        elif self.config['tts']['type'] == "highway":
+            self.tts = HighwayTTS(self.model.encoder.layers[self.layer_num].out_dim,
+                                  self.feat_dim, self.config['tts']['num_layers'],
+                                  self.model.encoder.sample_rate).to(self.device)
+
+        self.verbose(self.model.create_msg())
+        #self.verbose(self.tts.create_msg())
         model_paras = [{'params':self.tts.parameters()}]
 
         # Losses
@@ -67,7 +81,46 @@ class Solver(BaseSolver):
         self.enable_apex()
         
         # Automatically load pre-trained model if self.paras.load is given
-        self.load_ckpt()
+        self.load_ckpt(cont=False)
+
+    def backward(self, loss):
+        '''
+        Standard backward step with self.timer and debugger
+        Arguments
+            loss - the loss to perform loss.backward()
+        '''
+        self.timer.set()
+        loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.tts.parameters(), self.GRAD_CLIP)
+        if math.isnan(grad_norm):
+            self.verbose('Error : grad norm is NaN @ step '+str(self.step))
+        else:
+            self.optimizer.step()
+        self.timer.cnt('bw')
+        return grad_norm
+
+    def save_checkpoint(self, f_name, metric, score):
+        '''' 
+        Ckpt saver
+            f_name - <str> the name phnof ckpt file (w/o prefix) to store, overwrite if existed
+            score  - <float> The value of metric used to evaluate model
+        '''
+        ckpt_path = os.path.join(self.ckpdir, f_name)
+        full_dict = {
+            "model": self.tts.state_dict(),
+            "optimizer": self.optimizer.get_opt_state_dict(),
+            "global_step": self.step,
+            metric: score
+        }
+        # Additional modules to save
+        #if self.amp:
+        #    full_dict['amp'] = self.amp_lib.state_dict()
+        if self.emb_decoder is not None:
+            full_dict['emb_decoder'] = self.emb_decoder.state_dict()
+
+        torch.save(full_dict, ckpt_path)
+        self.verbose("Saved checkpoint (step = {}, {} = {:.2f}) and status @ {}".\
+                                       format(human_format(self.step),metric,score,ckpt_path))
 
     def exec(self):
         ''' Training End-to-end ASR system '''
@@ -96,12 +149,14 @@ class Solver(BaseSolver):
                 # Note: txt should NOT start w/ <sos>
                 with torch.no_grad():
                     ctc_output, encode_len, enc_hiddens, att_output, att_align, dec_state = \
-                        self.asr(feat, feat_len, max(txt_len), tf_rate=1.0,
-                                 teacher=txt)
-                feat_pred, align, stop = self.tts(enc_hiddens[self.layer_num][0], enc_hiddens[self.layer_num][1],
-                                                  feat, tf_rate=tf_rate)
+                        self.model(feat, feat_len, max(txt_len), tf_rate=1.0,
+                                   teacher=txt)
 
-                tts_loss = self.freq_loss(feat_pred, feat)
+                feat_pred = self.tts(enc_hiddens[self.layer_num][0])
+                mask = get_mask_from_sequence_lengths(feat_len, max(feat_len))[:, :feat_pred.size(1)]\
+                    .unsqueeze(-1).expand_as(feat_pred).bool()
+                feat_pred = feat_pred.masked_fill(mask, 0.0)
+                tts_loss = self.freq_loss(feat_pred.unsqueeze(1), feat[:, :feat_pred.size(1)])
                 total_loss = tts_loss
 
                 self.timer.cnt('fw')
@@ -129,7 +184,7 @@ class Solver(BaseSolver):
         
     def validate(self):
         # Eval mode
-        self.asr.eval()
+        self.model.eval()
         self.tts.eval()
         dev_tts_loss = []
 
@@ -141,11 +196,12 @@ class Solver(BaseSolver):
             # Forward model
             with torch.no_grad():
                 ctc_output, encode_len, enc_hiddens, att_output, att_align, dec_state = \
-                    self.asr(feat, feat_len, max(txt_len),
+                    self.model(feat, feat_len, max(txt_len),
                                 teacher=txt)
-            feat_pred, align, stop = self.tts(enc_hiddens[self.layer_num][0], enc_hiddens[self.layer_num][1],
-                                        feat)
-            dev_tts_loss.append(self.freq_loss(feat_pred, feat))
+                feat_pred = self.tts(enc_hiddens[self.layer_num][0])
+                #mask = get_mask_from_sequence_lengths(feat_len, max(feat_len))
+                tts_loss = self.freq_loss(feat_pred.unsqueeze(1), feat[:, :feat_pred.size(1)]) # * mask[:, :feat_pred.size(1)]
+            dev_tts_loss.append(tts_loss)
 
             # Show some example on tensorboard
             if i == len(self.dv_set)//2:
@@ -155,15 +211,15 @@ class Solver(BaseSolver):
                     ctc_hyps = ctc_output.argmax(dim=-1).cpu()[:DEV_N_EXAMPLES]
                 if att_output is not None:
                     att_hyps = att_output.argmax(dim=-1).cpu()[:DEV_N_EXAMPLES]
-                mel_p = feat_pred.cpu()[:DEV_N_EXAMPLES,1] # PostNet product
-                align_p = align.cpu()[:DEV_N_EXAMPLES]
+                mel_p = feat_pred.cpu()[:DEV_N_EXAMPLES] # PostNet product
+                #align_p = align.cpu()[:DEV_N_EXAMPLES]
                 sample_mel = feat.cpu()[:DEV_N_EXAMPLES]
 
-        for i,(m_p,a_p,h_p) in enumerate(zip(mel_p,align_p, ctc_hyps)):
+        for i,(m_p,h_p) in enumerate(zip(mel_p, ctc_hyps)):
             self.write_log('hyp_text{}'.format(i), self.tokenizer.decode(h_p.tolist(), ignore_repeat=True))
             self.write_log('mel_spec{}'.format(i), feat_to_fig(m_p))
             self.write_log('mel_wave{}'.format(i), self.audio_converter.feat_to_wave(m_p))
-            self.write_log('dv_align{}'.format(i), feat_to_fig(a_p))
+            # self.write_log('dv_align{}'.format(i), feat_to_fig(a_p))
 
         if self.step ==1:
             for i,(mel,gt_txt) in enumerate(zip(sample_mel, sample_txt)):
@@ -177,11 +233,11 @@ class Solver(BaseSolver):
         if dev_tts_loss < self.best_tts_loss:
             self.best_tts_loss = dev_tts_loss
             if self.step>1:
-                self.save_checkpoint('tts_{}.pth'.format(self.step),dev_tts_loss)
+                self.save_checkpoint('tts_{}.pth'.format(self.step), 'tts_loss', dev_tts_loss)
 
         if ((self.step>1) and (self.step % CKPT_STEP == 0)):
             # Regular ckpt
-            self.save_checkpoint('step_{}.pth'.format(self.step),dev_tts_loss)
+            self.save_checkpoint('step_{}.pth'.format(self.step), 'tts_loss', dev_tts_loss)
 
         self.write_log('speech_loss',{'dev':dev_tts_loss})
 

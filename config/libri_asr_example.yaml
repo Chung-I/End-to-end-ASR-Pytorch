@@ -19,8 +19,8 @@ data:
     time_stretch_range: [0.9, 1.1]
     inverse_prob: 0.0
   text:
-    mode: 'character'                       # 'character'/'word'/'subword'
-    vocab_file: 'tests/sample_data/character.vocab'
+    mode: 'subword'                       # 'character'/'word'/'subword'
+    vocab_file: 'tests/sample_data/subword.model'
 
 hparas:                                   # Experiment hyper-parameters
   valid_step: 5000
@@ -29,14 +29,18 @@ hparas:                                   # Experiment hyper-parameters
   tf_start: 1.0
   tf_end: 0.0
   tf_step: 500000
-  optimizer: 'Adadelta'
-  lr: 1.0
+  optimizer: 'SGD'
+  nesterov: True
+  momentum: 0.9
+  lr: 0.01
   lr_scheduler: 'fixed'                   # 'fixed'/'warmup'/'decay'
   
 model:                                    # Model architecture
   ctc_weight: 1.0                         # Weight for CTC loss
+  delta: 2
   encoder:
-    vgg: False                             # 4x reduction on time feature extraction
+    cnn:
+      type: 'vgg'                             # 4x reduction on time feature extraction
     module: 'LSTM'                        # 'LSTM'/'GRU'/'Transformer'
     bidirection: True
     dim: [320,320,320,320,320]
