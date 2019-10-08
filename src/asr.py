@@ -50,6 +50,13 @@ class ASR(nn.Module):
         if self.enable_att:
             self.decoder.set_state(prev_state)
             self.attention.set_mem(prev_attn)
+    def apply_delta_acceleration(self, feature):
+        bs, timesteps, feat_dim = feature.shape
+        if self.delta:
+            feature = feature.unsqueeze(1)
+            feature = self.delta(feature)
+            feature = feature.permute(0, 2, 1, 3).reshape(bs, timesteps, -1)
+        return feature
 
     def create_msg(self):
         # Messages for user
@@ -78,17 +85,13 @@ class ASR(nn.Module):
             get_dec_state - [bool]  If true, return decoder state [BxLxD] for other purpose
         '''
         # Init
-        audio_feature = audio_feature.unsqueeze(1)
-        if self.delta:
-            audio_feature = self.delta(audio_feature)
+        audio_feature = self.apply_delta_acceleration(audio_feature)
 
-        bs = audio_feature.shape[0]
         ctc_output, att_output, att_seq = None, None, None
         dec_state = [] if get_dec_state else None
 
         # Encode
-        enc_hiddens = self.encoder(audio_feature,feature_len)
-        encode_feature, encode_len = enc_hiddens[-1]
+        encode_feature, encode_len = self.encoder(audio_feature,feature_len)
 
         # CTC based decoding
         if self.enable_ctc:
@@ -146,7 +149,7 @@ class ASR(nn.Module):
             if get_dec_state:
                 dec_state = torch.stack(dec_state,dim=1)
 
-        return ctc_output, encode_len, enc_hiddens, att_output, att_seq, dec_state
+        return ctc_output, encode_len, att_output, att_seq, dec_state
 
 
 class Decoder(nn.Module):
@@ -168,7 +171,7 @@ class Decoder(nn.Module):
         self.layers = getattr(nn,module)(input_dim,dim, num_layers=layer, dropout=dropout, batch_first=True)
         self.char_trans = nn.Linear(dim,vocab_size)
         self.final_dropout = nn.Dropout(dropout)
-
+    
     def init_state(self, bs):
         ''' Set all hidden states to zeros '''
         device = next(self.parameters()).device
@@ -325,7 +328,7 @@ class Encoder(nn.Module):
         elif cnn['type'] == 'cnn':
             cnn.pop('type')
             cnn_encoder = CNN(input_size, in_channel, **cnn)
-            module_list.append(vgg_extractor)
+            module_list.append(cnn_encoder)
             input_dim = cnn_encoder.out_dim
             self.sample_rate = self.sample_rate*cnn_encoder._downsample_rate
 
@@ -344,8 +347,21 @@ class Encoder(nn.Module):
         self.layers = nn.ModuleList(module_list)
 
     def forward(self,input_x,enc_len):
-        outputs = []
         for _, layer in enumerate(self.layers):
-            input_x,enc_len = layer(input_x,enc_len)
-            outputs.append((input_x, enc_len))
-        return outputs
+            input_x, enc_len = layer(input_x,enc_len)
+
+        return input_x, enc_len
+
+    def get_hidden_states(self,input_x,enc_len,layer_num=-1, layer_counter=0):
+        layer_counter -= 1
+        for _, layer in enumerate(self.layers):
+            layer_counter += 1
+            if not isinstance(layer, RNNLayer):
+                input_x, enc_len, layer_counter = \
+                    layer.get_hidden_states(input_x, enc_len, layer_num, layer_counter)
+            else:
+                input_x, enc_len = layer(input_x, enc_len)
+            if layer_counter == layer_num:
+                return input_x, enc_len, layer_counter
+
+        return input_x, enc_len, layer_counter

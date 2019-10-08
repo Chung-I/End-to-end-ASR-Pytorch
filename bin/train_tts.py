@@ -10,6 +10,7 @@ from src.asr import ASR
 from src.tts import FeedForwardTTS, HighwayTTS
 from src.optim import Optimizer
 from src.data import load_dataset
+from src.module import RNNLayer
 from src.util import human_format, cal_er, feat_to_fig, freq_loss, get_mask_from_sequence_lengths
 
 DEV_N_EXAMPLES = 8 # How many examples to show in tensorboard
@@ -48,17 +49,26 @@ class Solver(BaseSolver):
         ''' Setup ASR model and optimizer '''
         # Model
         self.model = ASR(self.feat_dim, self.vocab_size, **self.config['model']).to(self.device)
-        # self.tts = TTS(self.feat_dim, None, self.config['tts'])
         self.layer_num = self.config['tts']['layer_num']
+        with torch.no_grad():
+            seq_len = 64
+            n_channels = self.config['model']['delta'] + 1
+            dummy_inputs = torch.randn((1, seq_len, n_channels * self.feat_dim)).to(self.device)
+            dummy_feat_len = torch.full((1, ), seq_len)
+            dummy_outs, dummy_out_len, _ = \
+                self.model.encoder.get_hidden_states(dummy_inputs, seq_len, self.layer_num)
+            tts_upsample_rate = (dummy_out_len / dummy_feat_len).int().item()
+            tts_in_dim = dummy_outs.size(-1)
 
         if self.config['tts']['type'] == "linear":
-            self.tts = FeedForwardTTS(self.model.encoder.layers[self.layer_num].out_dim,
+            #self.model.encoder.layers[self.layer_num].out_dim
+            self.tts = FeedForwardTTS(tts_in_dim,
                                       self.feat_dim, self.config['tts']['num_layers'],
-                                      self.model.encoder.sample_rate).to(self.device)
+                                      tts_upsample_rate).to(self.device)
         elif self.config['tts']['type'] == "highway":
-            self.tts = HighwayTTS(self.model.encoder.layers[self.layer_num].out_dim,
+            self.tts = HighwayTTS(tts_in_dim,
                                   self.feat_dim, self.config['tts']['num_layers'],
-                                  self.model.encoder.sample_rate).to(self.device)
+                                  tts_upsample_rate).to(self.device)
 
         self.verbose(self.model.create_msg())
         #self.verbose(self.tts.create_msg())
@@ -148,11 +158,10 @@ class Solver(BaseSolver):
                 # Forward model
                 # Note: txt should NOT start w/ <sos>
                 with torch.no_grad():
-                    ctc_output, encode_len, enc_hiddens, att_output, att_align, dec_state = \
-                        self.model(feat, feat_len, max(txt_len), tf_rate=1.0,
-                                   teacher=txt)
+                    deltas = self.model.apply_delta_acceleration(feat)
+                    hidden_outs, feat_len, _ = self.model.encoder.get_hidden_states(deltas, feat_len, self.layer_num)
 
-                feat_pred = self.tts(enc_hiddens[self.layer_num][0])
+                feat_pred = self.tts(hidden_outs)
                 mask = get_mask_from_sequence_lengths(feat_len, max(feat_len))[:, :feat_pred.size(1)]\
                     .unsqueeze(-1).expand_as(feat_pred).bool()
                 feat_pred = feat_pred.masked_fill(mask, 0.0)
@@ -195,10 +204,14 @@ class Solver(BaseSolver):
 
             # Forward model
             with torch.no_grad():
-                ctc_output, encode_len, enc_hiddens, att_output, att_align, dec_state = \
-                    self.model(feat, feat_len, max(txt_len),
-                                teacher=txt)
-                feat_pred = self.tts(enc_hiddens[self.layer_num][0])
+                deltas = self.model.apply_delta_acceleration(feat)
+                hidden_outs, feat_len, _ = self.model.encoder.get_hidden_states(deltas, feat_len, self.layer_num)
+                feat_pred = self.tts(hidden_outs)
+
+                # TODO(Chung-I): unnecessary second forwarding, need to change
+                ctc_output, encode_len, att_output, att_align, dec_state = \
+                    self.model(feat, feat_len, int(max(txt_len)*self.DEV_STEP_RATIO), 
+                                    emb_decoder=self.emb_decoder)
                 #mask = get_mask_from_sequence_lengths(feat_len, max(feat_len))
                 tts_loss = self.freq_loss(feat_pred.unsqueeze(1), feat[:, :feat_pred.size(1)]) # * mask[:, :feat_pred.size(1)]
             dev_tts_loss.append(tts_loss)
