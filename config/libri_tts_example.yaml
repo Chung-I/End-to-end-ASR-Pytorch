@@ -23,7 +23,7 @@ data:
     vocab_file: 'tests/sample_data/subword.model'
 
 hparas:                                   # Experiment hyper-parameters
-  valid_step: 5000
+  valid_step: 1000
   curriculum: 0
   max_step: 350001
   tf_start: 1.0
@@ -67,12 +67,12 @@ model:                                    # Model architecture
     dropout: 0
 tts:
   # type: 'highway'
-  layer_num: 0
+  layer_num: 12
   num_layers: 4
     # encoder:
     #   layer_num: 4
     #   enc_embed_dim: 320
-  type: 'linear'
+  type: 'highway'
   #decoder:
   #  n_frames_per_step: 5
   #  prenet_dim: 128

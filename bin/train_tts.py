@@ -65,7 +65,7 @@ class Solver(BaseSolver):
             dummy_feat_len = torch.full((1, ), seq_len)
             dummy_outs, dummy_out_len, _ = \
                 self.model.encoder.get_hidden_states(dummy_inputs, seq_len, self.layer_num)
-            tts_upsample_rate = (dummy_out_len / dummy_feat_len).int().item()
+            tts_upsample_rate = (dummy_feat_len / dummy_out_len).int().item()
             tts_in_dim = dummy_outs.size(-1)
 
         if self.config['tts']['type'] == "linear":
@@ -176,8 +176,9 @@ class Solver(BaseSolver):
 
                 # Forward model
                 # Note: txt should NOT start w/ <sos>
-                deltas = self.model.apply_delta_acceleration(feat)
-                hidden_outs, hidden_len, _ = self.model.encoder.get_hidden_states(deltas, feat_len, self.layer_num)
+                with torch.no_grad():
+                    deltas = self.model.apply_delta_acceleration(feat)
+                    hidden_outs, hidden_len, _ = self.model.encoder.get_hidden_states(deltas, feat_len, self.layer_num)
 
                 feat_pred, _, _ = self.tts(hidden_outs, hidden_len, feat, tf_rate=tf_rate)
                 feat_pred_len = feat_pred.size(-2)
@@ -236,11 +237,11 @@ class Solver(BaseSolver):
                 mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len)\
                     .unsqueeze(1).unsqueeze(-1).expand_as(feat_pred).bool()
                 feat_pred = feat_pred.masked_fill(~mask, 0.0)
-                # TODO(Chung-I): unnecessary second forwarding, need to change
-                # if self.step == 1:
-                #     ctc_output, encode_len, att_output, att_align, dec_state = \
-                #         self.model(feat, feat_len, int(max(txt_len)*self.DEV_STEP_RATIO), 
-                #                         emb_decoder=self.emb_decoder)
+                if self.step == 1:
+                    #TODO(Chung-I): unnecessary second forwarding, need to change
+                    ctc_output, encode_len, att_output, att_align, dec_state = \
+                        self.model(feat, feat_len, int(max(txt_len)*self.DEV_STEP_RATIO), 
+                                   emb_decoder=self.emb_decoder)
 
                 tts_loss = self.freq_loss(feat_pred, feat[..., :feat_pred_len, :])
 
@@ -271,7 +272,7 @@ class Solver(BaseSolver):
                 self.write_log('dv_align{}'.format(i), feat_to_fig(a_p))
 
         if self.step ==1:
-            for i,(mel,gt_txt, h_p) in enumerate(zip(sample_mel, sample_txt, ctc_hyps)):
+            for i,(mel,gt_txt,h_p) in enumerate(zip(sample_mel, sample_txt,ctc_hyps)):
                 if h_p is not None:
                     self.write_log('hyp_text{}'.format(i), self.tokenizer.decode(h_p.tolist(), ignore_repeat=True))
                 self.write_log('truth_text{}'.format(i), self.tokenizer.decode(gt_txt.tolist()))

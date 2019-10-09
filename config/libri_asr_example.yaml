@@ -46,6 +46,7 @@ model:                                    # Model architecture
   encoder:
     cnn:
       type: 'vgg'
+      nonlinearity: 'relu'
       # num_layers: 2
       # hidden_channel: 32
       # nonlinearity: relu

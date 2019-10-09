@@ -702,7 +702,7 @@ class DecoderTaco(nn.Module):
 
 class VGGExtractor(nn.Module):
     ''' VGG extractor for ASR described in https://arxiv.org/pdf/1706.02737.pdf'''
-    def __init__(self, freq_dim, in_channel):
+    def __init__(self, freq_dim, in_channel, nonlinearity: str = 'relu'):
         super(VGGExtractor, self).__init__()
         self.init_dim = 64
         self.hide_dim = 128
@@ -710,17 +710,18 @@ class VGGExtractor(nn.Module):
         self.in_channel = in_channel
         self.freq_dim = freq_dim
         self.out_dim = out_dim
+        non_linear = Nonlinearities[nonlinearity]()
 
         self.extractor = nn.Sequential(
                                 nn.Conv2d( in_channel, self.init_dim, 3, stride=1, padding=1),
-                                nn.ReLU(),
+                                non_linear,
                                 nn.Conv2d( self.init_dim, self.init_dim, 3, stride=1, padding=1),
-                                nn.ReLU(),
+                                non_linear,
                                 nn.MaxPool2d(2, stride=2), # Half-time dimension
                                 nn.Conv2d( self.init_dim, self.hide_dim, 3, stride=1, padding=1),
-                                nn.ReLU(),
+                                non_linear,
                                 nn.Conv2d( self.hide_dim, self.hide_dim, 3, stride=1, padding=1),
-                                nn.ReLU(),
+                                non_linear,
                                 nn.MaxPool2d(2, stride=2) # Half-time dimension
                             )
 
