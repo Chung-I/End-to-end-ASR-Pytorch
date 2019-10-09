@@ -5,7 +5,7 @@ data:
     train_split: ['train-clean-100']      # Name of data splits to be used as training set
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 
-    batch_size: 24
+    batch_size: 12
   audio:
     num_freq: 1025
     num_mels: 80
@@ -15,10 +15,9 @@ data:
     sample_rate: 16000
     use_linear: False                      ### Return Linear spectrogram
     # augmentation
-    snr_range: [10, 100]
-    time_stretch_range: [0.9, 1.1]
+    snr_range: [-1]
+    time_stretch_range: [1.0, 1.0]
     inverse_prob: 0.0
-    delta: 0
   text:
     mode: 'subword'                       # 'character'/'word'/'subword'
     vocab_file: 'tests/sample_data/subword.model'
@@ -34,15 +33,20 @@ hparas:                                   # Experiment hyper-parameters
   nesterov: True
   momentum: 0.9
   lr: 1.0
-  lr_scheduler: 'fixed'                   # 'fixed'/'warmup'/'decay'
+  lr_scheduler:
+    type: 'reduce_lr_on_plateau'                   # 'fixed'/'warmup'/'decay'/'reduce_lr_on_plateau'
+    factor: 0.5
+    patience: 4
   freq_loss_type: 'mse'                         # 'l1'/'mse'
   differential_loss: True
   emphasize_linear_low: True
   
 model:                                    # Model architecture
+  delta: 2
   ctc_weight: 1.0                         # Weight for CTC loss
   encoder:
-    vgg: True                             # 4x reduction on time feature extraction
+    cnn:                             # 4x reduction on time feature extraction
+      type: 'vgg'
     module: 'LSTM'                        # 'LSTM'/'GRU'/'Transformer'
     bidirection: True
     dim: [320,320,320,320,320]
@@ -65,28 +69,29 @@ model:                                    # Model architecture
     layer: 1
     dropout: 0
 tts:
-  type: 'highway'
-  layer_num: 0
-  num_layers: 4
+  # type: 'highway'
+  layer_num: 11
+  # num_layers: 4
     # encoder:
     #   layer_num: 4
     #   enc_embed_dim: 320
-    # decoder:
-    #   n_frames_per_step: 5
-    #   prenet_dim: 128
-    #   prenet_dropout: 0.5
-    #   query_rnn_dim: 1024
-    #   dec_rnn_dim: 1024
-    #   query_dropout: 0.1
-    #   dec_dropout: 0.1
-    #   attn_dim: 256
-    #   n_location_filters: 32
-    #   location_kernel_size: 31
-    #   loc_aware: True
-    #   use_summed_weights: True
-    #   drop_dec_in: 0.0
-    # postnet:
-    #   postnet_embed_dim: 512
-    #   postnet_kernel_size: 5
-    #   postnet_n_conv: 5
-    #   postnet_dropout: 0.5
+  type: 'tacotron2'
+  decoder:
+    n_frames_per_step: 5
+    prenet_dim: 128
+    prenet_dropout: 0.5
+    query_rnn_dim: 1024
+    dec_rnn_dim: 1024
+    query_dropout: 0.1
+    dec_dropout: 0.1
+    attn_dim: 256
+    n_location_filters: 32
+    location_kernel_size: 31
+    loc_aware: True
+    use_summed_weights: True
+    drop_dec_in: 0.0
+  postnet:
+    postnet_embed_dim: 512
+    postnet_kernel_size: 5
+    postnet_n_conv: 5
+    postnet_dropout: 0.5

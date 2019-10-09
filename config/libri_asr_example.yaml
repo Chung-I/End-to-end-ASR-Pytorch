@@ -15,8 +15,8 @@ data:
     sample_rate: 16000
     use_linear: False                      ### Return Linear spectrogram
     # augmentation
-    snr_range: [10, 100]
-    time_stretch_range: [0.9, 1.1]
+    snr_range: [-1]
+    time_stretch_range: [1.0, 1.0]
     inverse_prob: 0.0
   text:
     mode: 'subword'                       # 'character'/'word'/'subword'
@@ -33,14 +33,21 @@ hparas:                                   # Experiment hyper-parameters
   nesterov: True
   momentum: 0.9
   lr: 0.01
-  lr_scheduler: 'fixed'                   # 'fixed'/'warmup'/'decay'
+  lr_scheduler:
+    type: 'reduce_lr_on_plateau'                   # 'fixed'/'warmup'/'decay'/'reduce_lr_on_plateau'
+    factor: 0.5
+    patience: 4
+  reduce_lr_on_plateau_by: 'ctc'
   
 model:                                    # Model architecture
   ctc_weight: 1.0                         # Weight for CTC loss
   delta: 2
   encoder:
     cnn:
-      type: 'vgg'                             # 4x reduction on time feature extraction
+      type: 'vgg'
+      # num_layers: 2
+      # hidden_channel: 32
+      # nonlinearity: relu
     module: 'LSTM'                        # 'LSTM'/'GRU'/'Transformer'
     bidirection: True
     dim: [320,320,320,320,320]

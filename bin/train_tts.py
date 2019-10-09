@@ -7,9 +7,10 @@ import torch.nn as nn
 from src.solver import BaseSolver
 
 from src.asr import ASR
-from src.tts import FeedForwardTTS, HighwayTTS
+from src.tts import FeedForwardTTS, HighwayTTS, Tacotron, Tacotron2
 from src.optim import Optimizer
 from src.data import load_dataset
+from src.module import RNNLayer
 from src.util import human_format, cal_er, feat_to_fig, freq_loss, get_mask_from_sequence_lengths
 
 DEV_N_EXAMPLES = 8 # How many examples to show in tensorboard
@@ -28,6 +29,13 @@ class Solver(BaseSolver):
     def fetch_data(self, data):
         ''' Move data to device and compute text seq. length'''
         _, feat, feat_len, txt = data
+        if hasattr(self.tts, 'n_frames_per_step'):
+            bs, timesteps, _ = feat.size()
+            padded_timesteps = timesteps + self.tts.n_frames_per_step - \
+                (timesteps % self.tts.n_frames_per_step)
+            padded_feat = feat.new_zeros((bs, padded_timesteps, self.feat_dim))
+            padded_feat[:, :timesteps, :] = feat
+            feat = padded_feat
         feat = feat.to(self.device)
         feat_len = feat_len.to(self.device)
         txt = txt.to(self.device)
@@ -48,17 +56,29 @@ class Solver(BaseSolver):
         ''' Setup ASR model and optimizer '''
         # Model
         self.model = ASR(self.feat_dim, self.vocab_size, **self.config['model']).to(self.device)
-        # self.tts = TTS(self.feat_dim, None, self.config['tts'])
         self.layer_num = self.config['tts']['layer_num']
+        with torch.no_grad():
+            seq_len = 64
+            n_channels = self.config['model']['delta'] + 1
+            dummy_inputs = torch.randn((1, seq_len, n_channels * self.feat_dim)).to(self.device)
+            dummy_feat_len = torch.full((1, ), seq_len)
+            dummy_outs, dummy_out_len, _ = \
+                self.model.encoder.get_hidden_states(dummy_inputs, seq_len, self.layer_num)
+            tts_upsample_rate = (dummy_out_len / dummy_feat_len).int().item()
+            tts_in_dim = dummy_outs.size(-1)
 
         if self.config['tts']['type'] == "linear":
-            self.tts = FeedForwardTTS(self.model.encoder.layers[self.layer_num].out_dim,
+            #self.model.encoder.layers[self.layer_num].out_dim
+            self.tts = FeedForwardTTS(tts_in_dim,
                                       self.feat_dim, self.config['tts']['num_layers'],
-                                      self.model.encoder.sample_rate).to(self.device)
+                                      tts_upsample_rate).to(self.device)
         elif self.config['tts']['type'] == "highway":
-            self.tts = HighwayTTS(self.model.encoder.layers[self.layer_num].out_dim,
+            self.tts = HighwayTTS(tts_in_dim,
                                   self.feat_dim, self.config['tts']['num_layers'],
-                                  self.model.encoder.sample_rate).to(self.device)
+                                  tts_upsample_rate).to(self.device)
+        elif self.config['tts']['type'] == "tacotron2":
+            self.tts = Tacotron2(self.feat_dim,
+                                 tts_in_dim, self.config['tts']).to(self.device)
 
         self.verbose(self.model.create_msg())
         #self.verbose(self.tts.create_msg())
@@ -148,15 +168,15 @@ class Solver(BaseSolver):
                 # Forward model
                 # Note: txt should NOT start w/ <sos>
                 with torch.no_grad():
-                    ctc_output, encode_len, enc_hiddens, att_output, att_align, dec_state = \
-                        self.model(feat, feat_len, max(txt_len), tf_rate=1.0,
-                                   teacher=txt)
+                    deltas = self.model.apply_delta_acceleration(feat)
+                    hidden_outs, hidden_len, _ = self.model.encoder.get_hidden_states(deltas, feat_len, self.layer_num)
 
-                feat_pred = self.tts(enc_hiddens[self.layer_num][0])
-                mask = get_mask_from_sequence_lengths(feat_len, max(feat_len))[:, :feat_pred.size(1)]\
-                    .unsqueeze(-1).expand_as(feat_pred).bool()
+                feat_pred, _, _ = self.tts(hidden_outs, hidden_len, feat, tf_rate=tf_rate)
+                feat_pred_len = feat_pred.size(-2)
+                mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len)\
+                    .unsqueeze(1).unsqueeze(-1).expand_as(feat_pred).bool()
                 feat_pred = feat_pred.masked_fill(mask, 0.0)
-                tts_loss = self.freq_loss(feat_pred.unsqueeze(1), feat[:, :feat_pred.size(1)])
+                tts_loss = self.freq_loss(feat_pred, feat[..., :feat_pred_len, :])
                 total_loss = tts_loss
 
                 self.timer.cnt('fw')
@@ -187,6 +207,8 @@ class Solver(BaseSolver):
         self.model.eval()
         self.tts.eval()
         dev_tts_loss = []
+        att_output = None
+        ctc_output = None
 
         for i,data in enumerate(self.dv_set):
             self.progress('Valid step - {}/{}'.format(i+1,len(self.dv_set)))
@@ -195,12 +217,21 @@ class Solver(BaseSolver):
 
             # Forward model
             with torch.no_grad():
-                ctc_output, encode_len, enc_hiddens, att_output, att_align, dec_state = \
-                    self.model(feat, feat_len, max(txt_len),
-                                teacher=txt)
-                feat_pred = self.tts(enc_hiddens[self.layer_num][0])
-                #mask = get_mask_from_sequence_lengths(feat_len, max(feat_len))
-                tts_loss = self.freq_loss(feat_pred.unsqueeze(1), feat[:, :feat_pred.size(1)]) # * mask[:, :feat_pred.size(1)]
+                deltas = self.model.apply_delta_acceleration(feat)
+                hidden_outs, hidden_len, _ = self.model.encoder.get_hidden_states(deltas, feat_len, self.layer_num)
+                feat_pred, align, _ = self.tts(hidden_outs, hidden_len, feat.size(1), tf_rate=0.0)
+                feat_pred_len = feat_pred.size(-2)
+                mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len)\
+                    .unsqueeze(1).unsqueeze(-1).expand_as(feat_pred).bool()
+                feat_pred = feat_pred.masked_fill(mask, 0.0)
+                # TODO(Chung-I): unnecessary second forwarding, need to change
+                # if self.step == 1:
+                #     ctc_output, encode_len, att_output, att_align, dec_state = \
+                #         self.model(feat, feat_len, int(max(txt_len)*self.DEV_STEP_RATIO), 
+                #                         emb_decoder=self.emb_decoder)
+
+                tts_loss = self.freq_loss(feat_pred, feat[..., :feat_pred_len, :])
+
             dev_tts_loss.append(tts_loss)
 
             # Show some example on tensorboard
@@ -209,20 +240,27 @@ class Solver(BaseSolver):
                 sample_txt = txt.cpu()[:DEV_N_EXAMPLES]
                 if ctc_output is not None:
                     ctc_hyps = ctc_output.argmax(dim=-1).cpu()[:DEV_N_EXAMPLES]
+                else:
+                    ctc_hyps = [None] * DEV_N_EXAMPLES
                 if att_output is not None:
                     att_hyps = att_output.argmax(dim=-1).cpu()[:DEV_N_EXAMPLES]
-                mel_p = feat_pred.cpu()[:DEV_N_EXAMPLES] # PostNet product
-                #align_p = align.cpu()[:DEV_N_EXAMPLES]
+                mel_p = feat_pred.cpu()[:DEV_N_EXAMPLES,1] # PostNet product
+                if align is None:
+                    align_p = [None] * DEV_N_EXAMPLES
+                else:
+                    align_p = align.cpu()[:DEV_N_EXAMPLES]
                 sample_mel = feat.cpu()[:DEV_N_EXAMPLES]
 
-        for i,(m_p,h_p) in enumerate(zip(mel_p, ctc_hyps)):
-            self.write_log('hyp_text{}'.format(i), self.tokenizer.decode(h_p.tolist(), ignore_repeat=True))
+        for i,(m_p, a_p) in enumerate(zip(mel_p, align_p)):
             self.write_log('mel_spec{}'.format(i), feat_to_fig(m_p))
             self.write_log('mel_wave{}'.format(i), self.audio_converter.feat_to_wave(m_p))
-            # self.write_log('dv_align{}'.format(i), feat_to_fig(a_p))
+            if a_p is not None:
+                self.write_log('dv_align{}'.format(i), feat_to_fig(a_p))
 
         if self.step ==1:
-            for i,(mel,gt_txt) in enumerate(zip(sample_mel, sample_txt)):
+            for i,(mel,gt_txt, h_p) in enumerate(zip(sample_mel, sample_txt, ctc_hyps)):
+                if h_p is not None:
+                    self.write_log('hyp_text{}'.format(i), self.tokenizer.decode(h_p.tolist(), ignore_repeat=True))
                 self.write_log('truth_text{}'.format(i), self.tokenizer.decode(gt_txt.tolist()))
                 self.write_log('mel_spec{}_gt'.format(i), feat_to_fig(mel))
                 self.write_log('mel_wave{}_gt'.format(i), self.audio_converter.feat_to_wave(mel))

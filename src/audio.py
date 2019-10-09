@@ -524,7 +524,7 @@ class AudioConverter(AudioProcessor):
                 msp_aug = msp_aug[0].T  # 1st channel
             return (msp, msp_aug)
         else:
-            return (msp)
+            return (msp,)
 
     def feat_to_wave(self, feat):
         # (D, T)

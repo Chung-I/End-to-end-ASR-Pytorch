@@ -84,6 +84,7 @@ class Solver(BaseSolver):
                 self.tr_set, _, _, _, _, _ = \
                          load_dataset(self.paras.njobs, self.paras.gpu, self.paras.pin_memory, 
                                       False, **self.config['data'])
+
             for data in self.tr_set:
                 # Pre-step : update tf_rate/lr_rate and do zero_grad
                 tf_rate = self.optimizer.pre_step(self.step)
@@ -95,7 +96,7 @@ class Solver(BaseSolver):
 
                 # Forward model
                 # Note: txt should NOT start w/ <sos>
-                ctc_output, encode_len, _, att_output, att_align, dec_state = \
+                ctc_output, encode_len, att_output, att_align, dec_state = \
                     self.model(feat, feat_len, max(txt_len), tf_rate=tf_rate,
                                teacher=txt, get_dec_state=self.emb_reg)
                 
@@ -145,7 +146,8 @@ class Solver(BaseSolver):
 
                 # Validation
                 if (self.step==1) or (self.step%self.valid_step == 0):
-                    self.validate()
+                    dev_score = self.validate()
+                    _ = self.optimizer.pre_step(self.step, dev_score) # update learning rate
 
                 # End of step
                 torch.cuda.empty_cache() # https://github.com/pytorch/pytorch/issues/13246#issuecomment-529185354
@@ -167,7 +169,7 @@ class Solver(BaseSolver):
 
             # Forward model
             with torch.no_grad():
-                ctc_output, encode_len, _, att_output, att_align, dec_state = \
+                ctc_output, encode_len, att_output, att_align, dec_state = \
                     self.model( feat, feat_len, int(max(txt_len)*self.DEV_STEP_RATIO), 
                                     emb_decoder=self.emb_decoder)
 
@@ -198,3 +200,4 @@ class Solver(BaseSolver):
         # Resume training
         self.model.train()
         if self.emb_decoder is not None: self.emb_decoder.train()
+        return dev_wer[self.config['hparas']['reduce_lr_on_plateau_by']]

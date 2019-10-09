@@ -1,9 +1,12 @@
 from typing import Tuple
+from collections import OrderedDict
+from functools import reduce
+
 import torch
 import numpy as np
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence,pad_packed_sequence
-
 
 Nonlinearities = {  # type: ignore
         "linear": lambda: lambda x: x,
@@ -66,6 +69,27 @@ class LengthAwareWrapper(nn.Module):
         else:
             outputs = self.module(inputs)
         return (outputs, lengths)
+
+
+class Conv1d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=1, stride=1,
+                 padding=None, dilation=1, bias=True, w_init_gain='linear'):
+        super(Conv1d, self).__init__()
+        if padding is None:
+            assert (kernel_size % 2 == 1), "kernel_size should be odd if no given padding."
+            padding = (dilation * (kernel_size - 1)) // 2
+
+        self.conv = torch.nn.Conv1d(
+            in_channels, out_channels, kernel_size=kernel_size,
+            stride=stride, padding=padding, dilation=dilation,
+            bias=bias)
+
+        torch.nn.init.xavier_uniform_(
+            self.conv.weight, gain=torch.nn.init.calculate_gain(w_init_gain))
+
+    def forward(self, x):
+        return self.conv(x)
+
 
 # https://github.com/mozilla/TTS/issues/26
 class Prenet(nn.Module):
@@ -175,6 +199,73 @@ class Encoder(nn.Module):
         output, _ = self.lstm(x)
         #output, _ = nn.utils.rnn.pad_packed_sequence(output, batch_first=True)
         return output
+
+
+class Attention(nn.Module):
+    """Atention module"""
+    def __init__(self, query_dim, memory_dim, hidden_dim, 
+                 n_location_filters, location_kernel_size, 
+                 loc_aware, use_summed_weights):
+        super(Attention, self).__init__()
+        self.query_layer = Linear(query_dim, hidden_dim, 
+                                  bias=False, w_init_gain='tanh')
+        self.memory_layer = Linear(memory_dim, hidden_dim, 
+                                   bias=False, w_init_gain='tanh')
+        self.v = Linear(hidden_dim, 1, bias=False)
+        self.tanh = nn.Tanh()
+        # loc: location-awared part
+        self.loc_aware = loc_aware
+        self.use_summed_weights = use_summed_weights
+        if loc_aware:
+            in_channels = 2 if use_summed_weights else 1
+            self.loc_conv = Conv1d(in_channels=in_channels, 
+                                   out_channels=n_location_filters, 
+                                   kernel_size=location_kernel_size, 
+                                   bias=False, stride=1, dilation=1)
+            self.loc_linear = Linear(n_location_filters, hidden_dim, 
+                                     bias=False, w_init_gain='tanh')
+
+    def process_memory(self, memory):
+        # Don't need to process memory for each decode timestep
+        return self.memory_layer(memory)
+
+    def energy(self, query, processed_memory, attn_history):
+        """
+        Arg:
+            query: (B, out_dim of `prenet`)
+            processed_memory: (B, L, hidden_dim)
+            attn_history: (B, 2, L)
+        Return:
+            energy of shape (B, L)
+        """
+        processed_query = self.query_layer(query.unsqueeze(1))
+
+        # Get location-awared feature
+        if self.loc_aware:
+            processed_loc_feat = self.loc_conv(attn_history).transpose(1, 2)
+            processed_loc_feat = self.loc_linear(processed_loc_feat)
+        else:
+            processed_loc_feat = 0
+        # Calculate energy
+        energy = self.v(self.tanh(
+            processed_query + processed_loc_feat + processed_memory))
+        energy = energy.squeeze(-1)
+        return energy
+
+    def forward(self, query, memory, processed_memory, 
+                attn_history, mask):
+        energy = self.energy(query, processed_memory, attn_history)
+
+        # Fill the -inf for padding encoder output
+        if mask is not None:
+            energy.data.masked_fill_(mask, -float('inf'))
+
+        # (B, L)
+        attn_weights = F.softmax(energy, dim=1)
+        # Broadcast bmm, (B, 1, hidden_dim)
+        attn_context = torch.bmm(attn_weights.unsqueeze(1), memory)
+        attn_context = attn_context.squeeze(1)
+        return attn_context, attn_weights
 
 
 class Decoder(nn.Module):
@@ -661,61 +752,122 @@ class VGGExtractor(nn.Module):
         # Feature shape BSxTxD -> BS x CH(num of delta) x T x D(acoustic feature dim)
         #feature, feat_len = self.view_input(feature,feat_len)
         # Foward
-        feat_len = feat_len//4
-        feature = self.extractor(feature)
-        # BSx128xT/4xD/4 -> BSxT/4x128xD/4
-        feature = feature.transpose(1,2)
-        #  BS x T/4 x 128 x D/4 -> BS x T/4 x 32D
-        feature = feature.contiguous().view(feature.shape[0],feature.shape[1],self.out_dim)
-        return feature,feat_len
+        batch_size = feature.size(0)
+        feature = feature.view(batch_size, -1, self.in_channel, self.freq_dim).permute(0, 2, 1, 3)
+        for module in self.extractor._modules.values():        
+            feature = module(feature)
+            if isinstance(module, nn.MaxPool2d):
+                feat_len = feat_len // 2
+
+        batch_size, _, timesteps, _ = feature.size()
+        feature = feature.permute(0, 2, 1, 3).reshape(batch_size, timesteps, -1)
+
+        return feature, feat_len
+
+    def get_hidden_states(self,feature,feat_len, layer_num=-1, layer_counter=0):
+        # Feature shape BSxTxD -> BS x CH(num of delta) x T x D(acoustic feature dim)
+        #feature, feat_len = self.view_input(feature,feat_len)
+        # Foward
+        def flatten(feature):
+            batch_size, _, timesteps, _ = feature.size()
+            return feature.permute(0, 2, 1, 3).reshape(batch_size, timesteps, -1)
+
+        batch_size = feature.size(0)
+        feature = feature.view(batch_size, -1, self.in_channel, self.freq_dim).permute(0, 2, 1, 3)
+        for idx, module in enumerate(self.extractor._modules.values()):
+            feature = module(feature)
+            if isinstance(module, nn.MaxPool2d):
+                feat_len = feat_len // 2
+            if layer_num == layer_counter + idx:
+                flattened_features = flatten(feature)
+                return flattened_features, feat_len, layer_counter + idx
+
+        flattened_features = flatten(feature)
+        return flattened_features, feat_len, layer_counter + idx
 
 
 class CNN(nn.Module):
-    def __init__(self, input_size: int, in_channel: int, hidden_channel: int, num_layers: int,
+    def __init__(self, freq_dim: int, in_channel: int, hidden_channel: int, num_layers: int,
                  kernel_size: int = 3, stride: int = 2, batch_norm: bool = False,
                  nonlinearity: str = 'linear'):
         super(CNN, self).__init__()
-        self._in_channel = in_channel
-        self._hidden_channel = hidden_channel
-        self._kernel_size = kernel_size
-        self._stride = stride
-        self._num_layers = num_layers
-        self._input_size = input_size
-        non_linear = Nonlinearities[nonlinearity]
+        self.in_channel = in_channel
+        self.hidden_channel = hidden_channel
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.num_layers = num_layers
+        self.freq_dim = freq_dim
+        non_linear = Nonlinearities[nonlinearity]()
         layers = []
         for l in range(num_layers):
-            in_channel = self._in_channel if l == 0 else self._hidden_channel
-            conv = LengthAwareWrapper(nn.Conv2d(in_channel, self._hidden_channel,
-                                                self._kernel_size, stride=self._stride,
+            in_channel = self.in_channel if l == 0 else self.hidden_channel
+            conv = LengthAwareWrapper(nn.Conv2d(in_channel, self.hidden_channel,
+                                                self.kernel_size, stride=self.stride,
                                                 padding=1))
-            layers.append((f"conv{l}", conv))
+            layers.append(conv)
             if batch_norm:
-                bn = LengthAwareWrapper(nn.BatchNorm2d(self._hidden_channel), pass_through=True)
-                layers.append((f"bn{l}", bn))
-            layers.append((f"nonlinear{l}", LengthAwareWrapper(non_linear, pass_through=True)))
-        self.module = nn.Sequential(OrderedDict(layers))
-        strides = [self.module[idx].stride for idx in range(len(self.module))
-                   if hasattr(self.module[idx], "stride")]
-        self._downsample_rate = reduce(lambda x, y: x * y, strides)
+                bn = LengthAwareWrapper(nn.BatchNorm2d(self.hidden_channel), pass_through=True)
+                layers.append(bn)
+            layers.append(LengthAwareWrapper(non_linear, pass_through=True))
+        self.modules = nn.ModuleList(layers)
+        strides = [self.module[idx].stride for idx in range(len(self.modules))
+                   if hasattr(self.modules[idx], "stride")]
+        self.downsample_rate = reduce(lambda x, y: x * y, strides)
         self.out_dim = self.get_output_dim()
 
     def get_input_dim(self) -> int:
-        return self._in_channel
+        return self.in_channel
 
     def get_output_dim(self) -> int:
-        return self._hidden_channel * self._input_size // self._downsample_rate
+        return self.hidden_channel * self.freq_dim // self.downsample_rate
 
     def is_bidirectional(self) -> bool:
         return False
 
-    def forward(self, feature, lengths):
+    def forward(self,feature,feat_len):
         # Feature shape BSxTxD -> BS x CH(num of delta) x T x D(acoustic feature dim)
-        batch_size, _, _, feat_dim = feature.size()
-        feature, lengths = self.module((feature, lengths))
+        #feature, feat_len = self.view_input(feature,feat_len)
+        # Foward
+        batch_size = feature.size(0)
+        feature = feature.view(batch_size, -1, self.in_channel, self.freq_dim).permute(0, 2, 1, 3)
+        for module in self.modules():        
+            feature, feat_len = module((feature, feat_len))
+
         batch_size, _, timesteps, _ = feature.size()
         feature = feature.permute(0, 2, 1, 3).reshape(batch_size, timesteps, -1)
-        return feature, lengths
 
+        return feature, feat_len
+
+    def forward(self, feature, lengths):
+        # Feature shape BSxTxD -> BS x CH(num of delta) x T x D(acoustic feature dim)
+        batch_size, timesteps, _ = feature.size()
+        feature = feature.view(batch_size, -1, self.in_channel, self.freq_dim).permute(0, 2, 1, 3)
+        hidden_outputs = []
+        for module in self.modules:
+            feature, lengths = module((feature, lengths))
+            batch_size, _, timesteps, _ = feature.size()
+            flattened_features = feature.permute(0, 2, 1, 3).reshape(batch_size, timesteps, -1)
+            hidden_outputs.append((flattened_features, lengths))
+        return hidden_outputs
+
+    def get_hidden_states(self,feature,feat_len, layer_num=-1, layer_counter=0):
+        # Feature shape BSxTxD -> BS x CH(num of delta) x T x D(acoustic feature dim)
+        #feature, feat_len = self.view_input(feature,feat_len)
+        # Foward
+        def flatten(feature):
+            batch_size, _, timesteps, _ = feature.size()
+            return feature.permute(0, 2, 1, 3).reshape(batch_size, timesteps, -1)
+
+        batch_size = feature.size(0)
+        feature = feature.view(batch_size, -1, self.in_channel, self.freq_dim).permute(0, 2, 1, 3)
+        for idx, module in enumerate(self.modules):
+            feature, feat_len = module(feature, feat_len)
+            if layer_num == layer_counter + idx:
+                flattened_features = flatten(feature)
+                return flattened_features, feat_len, layer_counter + idx
+
+        flattened_features = flatten(feature)
+        return flattened_features, feat_len, layer_counter + idx
 
 class RNNLayer(nn.Module):
     ''' RNN wrapper, includes time-downsampling'''
