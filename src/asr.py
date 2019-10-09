@@ -331,6 +331,8 @@ class Encoder(nn.Module):
             module_list.append(cnn_encoder)
             input_dim = cnn_encoder.out_dim
             self.sample_rate = self.sample_rate*cnn_encoder._downsample_rate
+        elif cnn['type'] != 'none':
+            raise NotImplementedError
 
 
         if module in ['LSTM','GRU']:

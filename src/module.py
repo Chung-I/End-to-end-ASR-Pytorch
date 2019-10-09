@@ -5,6 +5,7 @@ from functools import reduce
 import torch
 import numpy as np
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence,pad_packed_sequence
 
 Nonlinearities = {  # type: ignore
@@ -68,6 +69,27 @@ class LengthAwareWrapper(nn.Module):
         else:
             outputs = self.module(inputs)
         return (outputs, lengths)
+
+
+class Conv1d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=1, stride=1,
+                 padding=None, dilation=1, bias=True, w_init_gain='linear'):
+        super(Conv1d, self).__init__()
+        if padding is None:
+            assert (kernel_size % 2 == 1), "kernel_size should be odd if no given padding."
+            padding = (dilation * (kernel_size - 1)) // 2
+
+        self.conv = torch.nn.Conv1d(
+            in_channels, out_channels, kernel_size=kernel_size,
+            stride=stride, padding=padding, dilation=dilation,
+            bias=bias)
+
+        torch.nn.init.xavier_uniform_(
+            self.conv.weight, gain=torch.nn.init.calculate_gain(w_init_gain))
+
+    def forward(self, x):
+        return self.conv(x)
+
 
 # https://github.com/mozilla/TTS/issues/26
 class Prenet(nn.Module):
@@ -177,6 +199,73 @@ class Encoder(nn.Module):
         output, _ = self.lstm(x)
         #output, _ = nn.utils.rnn.pad_packed_sequence(output, batch_first=True)
         return output
+
+
+class Attention(nn.Module):
+    """Atention module"""
+    def __init__(self, query_dim, memory_dim, hidden_dim, 
+                 n_location_filters, location_kernel_size, 
+                 loc_aware, use_summed_weights):
+        super(Attention, self).__init__()
+        self.query_layer = Linear(query_dim, hidden_dim, 
+                                  bias=False, w_init_gain='tanh')
+        self.memory_layer = Linear(memory_dim, hidden_dim, 
+                                   bias=False, w_init_gain='tanh')
+        self.v = Linear(hidden_dim, 1, bias=False)
+        self.tanh = nn.Tanh()
+        # loc: location-awared part
+        self.loc_aware = loc_aware
+        self.use_summed_weights = use_summed_weights
+        if loc_aware:
+            in_channels = 2 if use_summed_weights else 1
+            self.loc_conv = Conv1d(in_channels=in_channels, 
+                                   out_channels=n_location_filters, 
+                                   kernel_size=location_kernel_size, 
+                                   bias=False, stride=1, dilation=1)
+            self.loc_linear = Linear(n_location_filters, hidden_dim, 
+                                     bias=False, w_init_gain='tanh')
+
+    def process_memory(self, memory):
+        # Don't need to process memory for each decode timestep
+        return self.memory_layer(memory)
+
+    def energy(self, query, processed_memory, attn_history):
+        """
+        Arg:
+            query: (B, out_dim of `prenet`)
+            processed_memory: (B, L, hidden_dim)
+            attn_history: (B, 2, L)
+        Return:
+            energy of shape (B, L)
+        """
+        processed_query = self.query_layer(query.unsqueeze(1))
+
+        # Get location-awared feature
+        if self.loc_aware:
+            processed_loc_feat = self.loc_conv(attn_history).transpose(1, 2)
+            processed_loc_feat = self.loc_linear(processed_loc_feat)
+        else:
+            processed_loc_feat = 0
+        # Calculate energy
+        energy = self.v(self.tanh(
+            processed_query + processed_loc_feat + processed_memory))
+        energy = energy.squeeze(-1)
+        return energy
+
+    def forward(self, query, memory, processed_memory, 
+                attn_history, mask):
+        energy = self.energy(query, processed_memory, attn_history)
+
+        # Fill the -inf for padding encoder output
+        if mask is not None:
+            energy.data.masked_fill_(mask, -float('inf'))
+
+        # (B, L)
+        attn_weights = F.softmax(energy, dim=1)
+        # Broadcast bmm, (B, 1, hidden_dim)
+        attn_context = torch.bmm(attn_weights.unsqueeze(1), memory)
+        attn_context = attn_context.squeeze(1)
+        return attn_context, attn_weights
 
 
 class Decoder(nn.Module):
