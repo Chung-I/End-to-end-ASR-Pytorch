@@ -316,7 +316,7 @@ class Encoder(nn.Module):
 
         # Construct model
         module_list = []
-        input_dim = input_size
+        input_dim = input_size * in_channel
 
         self.vgg = False
         if cnn['type'] == 'vgg':
@@ -356,6 +356,8 @@ class Encoder(nn.Module):
 
     def get_hidden_states(self,input_x,enc_len,layer_num=-1, layer_counter=0):
         layer_counter -= 1
+        if layer_num == layer_counter:
+            return input_x, enc_len, layer_counter - 1
         for _, layer in enumerate(self.layers):
             layer_counter += 1
             if not isinstance(layer, RNNLayer):

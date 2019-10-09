@@ -11,7 +11,8 @@ from src.tts import FeedForwardTTS, HighwayTTS, Tacotron, Tacotron2
 from src.optim import Optimizer
 from src.data import load_dataset
 from src.module import RNNLayer
-from src.util import human_format, cal_er, feat_to_fig, freq_loss, get_mask_from_sequence_lengths
+from src.util import human_format, cal_er, feat_to_fig, freq_loss, \
+	             get_mask_from_sequence_lengths, get_grad_norm
 
 DEV_N_EXAMPLES = 8 # How many examples to show in tensorboard
 CKPT_STEP = 10000
@@ -82,7 +83,10 @@ class Solver(BaseSolver):
 
         self.verbose(self.model.create_msg())
         #self.verbose(self.tts.create_msg())
-        model_paras = [{'params':self.tts.parameters()}]
+        model_paras = [{'params': self.model.parameters()},
+                       {'params': self.tts.parameters()}]
+        for param in self.model.parameters():
+            param.requires_grad = False
 
         # Losses
         self.freq_loss = partial(
@@ -111,7 +115,12 @@ class Solver(BaseSolver):
         '''
         self.timer.set()
         loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(self.tts.parameters(), self.GRAD_CLIP)
+
+        if self.GRAD_CLIP < float('inf'):
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.tts.parameters(), self.GRAD_CLIP)
+        else:
+            grad_norm = get_grad_norm(self.tts.parameters())
+
         if math.isnan(grad_norm):
             self.verbose('Error : grad norm is NaN @ step '+str(self.step))
         else:
@@ -167,15 +176,16 @@ class Solver(BaseSolver):
 
                 # Forward model
                 # Note: txt should NOT start w/ <sos>
-                with torch.no_grad():
-                    deltas = self.model.apply_delta_acceleration(feat)
-                    hidden_outs, hidden_len, _ = self.model.encoder.get_hidden_states(deltas, feat_len, self.layer_num)
+                deltas = self.model.apply_delta_acceleration(feat)
+                hidden_outs, hidden_len, _ = self.model.encoder.get_hidden_states(deltas, feat_len, self.layer_num)
 
                 feat_pred, _, _ = self.tts(hidden_outs, hidden_len, feat, tf_rate=tf_rate)
                 feat_pred_len = feat_pred.size(-2)
+                if not isinstance(self.tts, Tacotron2):
+                    feat_pred = feat_pred.unsqueeze(1)
                 mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len)\
                     .unsqueeze(1).unsqueeze(-1).expand_as(feat_pred).bool()
-                feat_pred = feat_pred.masked_fill(mask, 0.0)
+                feat_pred = feat_pred.masked_fill(~mask, 0.0)
                 tts_loss = self.freq_loss(feat_pred, feat[..., :feat_pred_len, :])
                 total_loss = tts_loss
 
@@ -221,9 +231,11 @@ class Solver(BaseSolver):
                 hidden_outs, hidden_len, _ = self.model.encoder.get_hidden_states(deltas, feat_len, self.layer_num)
                 feat_pred, align, _ = self.tts(hidden_outs, hidden_len, feat.size(1), tf_rate=0.0)
                 feat_pred_len = feat_pred.size(-2)
+                if not isinstance(self.tts, Tacotron2):
+                    feat_pred = feat_pred.unsqueeze(1)
                 mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len)\
                     .unsqueeze(1).unsqueeze(-1).expand_as(feat_pred).bool()
-                feat_pred = feat_pred.masked_fill(mask, 0.0)
+                feat_pred = feat_pred.masked_fill(~mask, 0.0)
                 # TODO(Chung-I): unnecessary second forwarding, need to change
                 # if self.step == 1:
                 #     ctc_output, encode_len, att_output, att_align, dec_state = \
@@ -244,7 +256,8 @@ class Solver(BaseSolver):
                     ctc_hyps = [None] * DEV_N_EXAMPLES
                 if att_output is not None:
                     att_hyps = att_output.argmax(dim=-1).cpu()[:DEV_N_EXAMPLES]
-                mel_p = feat_pred.cpu()[:DEV_N_EXAMPLES,1] # PostNet product
+                channel = 1 if isinstance(self.tts, Tacotron2) else 0
+                mel_p = feat_pred.cpu()[:DEV_N_EXAMPLES,channel] # PostNet product
                 if align is None:
                     align_p = [None] * DEV_N_EXAMPLES
                 else:

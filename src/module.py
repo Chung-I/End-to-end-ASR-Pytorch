@@ -774,6 +774,10 @@ class VGGExtractor(nn.Module):
 
         batch_size = feature.size(0)
         feature = feature.view(batch_size, -1, self.in_channel, self.freq_dim).permute(0, 2, 1, 3)
+
+        if layer_num == layer_counter - 1:
+            return feature, feat_len, layer_counter - 1
+
         for idx, module in enumerate(self.extractor._modules.values()):
             feature = module(feature)
             if isinstance(module, nn.MaxPool2d):
@@ -860,6 +864,10 @@ class CNN(nn.Module):
 
         batch_size = feature.size(0)
         feature = feature.view(batch_size, -1, self.in_channel, self.freq_dim).permute(0, 2, 1, 3)
+
+        if layer_num == layer_counter - 1:
+            return feature, feat_len, layer_counter - 1
+
         for idx, module in enumerate(self.modules):
             feature, feat_len = module(feature, feat_len)
             if layer_num == layer_counter + idx:
@@ -875,12 +883,13 @@ class RNNLayer(nn.Module):
         super(RNNLayer, self).__init__()
         # Setup
         rnn_out_dim = 2*dim if bidirection else dim
-        self.out_dim = sample_rate*rnn_out_dim if sample_rate>1 and sample_style=='concat' else rnn_out_dim
+        self.proj = proj
+        stack_rate = sample_rate if sample_rate > 1 and sample_style == 'concat' else 1
+        self.out_dim = stack_rate*rnn_out_dim if not self.proj else rnn_out_dim
         self.dropout = dropout
         self.layer_norm = layer_norm
         self.sample_rate = sample_rate
         self.sample_style = sample_style
-        self.proj = proj
 
         if self.sample_style not in ['drop','concat']:
             raise ValueError('Unsupported Sample Style: '+self.sample_style)
@@ -896,7 +905,7 @@ class RNNLayer(nn.Module):
 
         # Additional projection layer
         if self.proj:
-            self.pj = nn.Linear(rnn_out_dim,rnn_out_dim)
+            self.pj = nn.Linear(stack_rate*rnn_out_dim,rnn_out_dim)
 
     def forward(self, input_x , x_len):
         # Forward RNN

@@ -29,6 +29,7 @@ hparas:                                   # Experiment hyper-parameters
   tf_start: 1.0
   tf_end: 0.0
   tf_step: 500000
+  grad_clip: 'inf'
   optimizer: 'SGD'
   nesterov: True
   momentum: 0.9

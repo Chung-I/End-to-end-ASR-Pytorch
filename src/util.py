@@ -3,6 +3,7 @@ import time
 import torch
 import numpy as np
 from torch import nn
+from torch._six import inf
 import editdistance as ed
 
 import matplotlib
@@ -210,3 +211,18 @@ def get_mask_from_sequence_lengths(sequence_lengths: torch.Tensor, max_length: i
     ones = sequence_lengths.new_ones(sequence_lengths.size(0), max_length)
     range_tensor = ones.cumsum(dim=1)
     return (sequence_lengths.unsqueeze(1) >= range_tensor).long()
+
+
+def get_grad_norm(parameters, norm_type=2):
+    parameters = list(filter(lambda p: p.grad is not None, parameters))
+    norm_type = float(norm_type)
+    if norm_type == inf:
+        total_norm = max(p.grad.data.abs().max() for p in parameters)
+    else:
+        total_norm = 0
+        for p in parameters:
+            param_norm = p.grad.data.norm(norm_type)
+            total_norm += param_norm.item() ** norm_type
+        total_norm = total_norm ** (1. / norm_type)
+
+    return total_norm

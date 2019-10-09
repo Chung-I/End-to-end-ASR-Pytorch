@@ -51,6 +51,8 @@ class BaseSolver():
             self.step = 0
             self.valid_step = config['hparas']['valid_step']
             self.max_step = config['hparas']['max_step']
+            if config['hparas'].get('grad_clip'):
+                self.GRAD_CLIP = float(config['hparas']['grad_clip'])
             
             self.verbose('Exp. name : {}'.format(self.exp_name))
             self.verbose('Loading data... large corpus may took a while.')
