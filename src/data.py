@@ -31,12 +31,15 @@ def collect_audio_batch(batch, audio_transform, mode):
     with torch.no_grad():
         for b in batch:
             feat = audio_transform(str(b[0]))
-            # Split the feat if feat is a tuple(added noise)
+            # feat may be (mel_sp) or (mel_sp, mel_sp_augmented)
             for f in feat:
                 file.append(str(b[0]).split('/')[-1].split('.')[0])
                 audio_feat.append(f)
                 audio_len.append(len(f))
                 text.append(torch.LongTensor(b[1]))
+                # Testing without augmented data
+                if mode == 'test':
+                    break
 
     # Descending audio length within each batch
     audio_len, file, audio_feat, text = zip(*[(feat_len, f_name, feat, txt)
