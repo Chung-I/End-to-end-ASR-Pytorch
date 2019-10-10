@@ -14,9 +14,9 @@ HALF_BATCHSIZE_TEXT_LEN = 150
 
 def collect_audio_batch(batch, audio_transform, mode, task):
     '''Collects a batch, should be list of tuples (audio_path <str>, list of int token <list>)
-       e.g. [(file1,txt1),(file2,txt2),...] '''
+       e.g. [(file1,txt1,id1),(file2,txt2,id2),...] '''
 
-    # Bucketed batch should be [[(file1,txt1),(file2,txt2),...]]
+    # Bucketed batch should be [[(file1,txt1,id1),(file2,txt2,id2),...]]
     if type(batch[0]) is not tuple:
         batch = batch[0]
     # Make sure that batch size is reasonable
@@ -27,7 +27,7 @@ def collect_audio_batch(batch, audio_transform, mode, task):
         batch = batch[:len(batch)//2]
 
     # Read batch
-    file, audio_feat, audio_len, text = [], [], [], []
+    file, audio_feat, audio_len, text, spkr_id = [], [], [], [], []
     with torch.no_grad():
         for b in batch:
             feat = audio_transform(str(b[0]))
@@ -37,19 +37,20 @@ def collect_audio_batch(batch, audio_transform, mode, task):
                 audio_feat.append(f)
                 audio_len.append(len(f))
                 text.append(torch.LongTensor(b[1]))
+                spkr_id.append(torch.tensor(b[2]))
                 # Testing without augmented data
                 if task == 'asr' and mode == 'test':
                     break
 
     # Descending audio length within each batch
-    audio_len, file, audio_feat, text = zip(*[(feat_len, f_name, feat, txt)
-                                              for feat_len, f_name, feat, txt in sorted(zip(audio_len, file, audio_feat, text), reverse=True, key=lambda x:x[0])])
+    audio_len, file, audio_feat, text, spkr_id = zip(*[(feat_len, f_name, feat, txt, idx) for feat_len, f_name, feat, txt, idx in sorted(
+        zip(audio_len, file, audio_feat, text, spkr_id), reverse=True, key=lambda x:x[0])])
     # Zero-padding
     audio_feat = pad_sequence(audio_feat, batch_first=True)
     text = pad_sequence(text, batch_first=True)
     audio_len = torch.LongTensor(audio_len)
 
-    return file, audio_feat, audio_len, text
+    return file, audio_feat, audio_len, text, spkr_id
 
 
 def collect_text_batch(batch, mode):
@@ -92,8 +93,8 @@ def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
         tr_set = Dataset(path, train_split, tokenizer,
                          bucket_size, ascending=ascending)
         # Messages to show
-        msg_list = _data_msg(name, path, train_split.__str__(), len(tr_set),
-                             dev_split.__str__(), len(dv_set), batch_size, bucketing)
+        msg_list = _data_msg(name, path, train_split.__str__(), tr_set,
+                             dev_split.__str__(), dv_set, batch_size, bucketing)
 
         return tr_set, dv_set, tr_loader_bs, batch_size, mode, msg_list
     else:
@@ -191,10 +192,10 @@ def _data_msg(name, path, train_split, tr_set, dev_split, dv_set, batch_size, bu
     ''' List msg for verbose function '''
     msg_list = []
     msg_list.append('Data spec. | Corpus = {} (from {})'.format(name, path))
-    msg_list.append('           | Train sets = {}\t| Number of utts = {}'.format(
-        train_split, tr_set))
-    msg_list.append(
-        '           | Dev sets = {}\t| Number of utts = {}'.format(dev_split, dv_set))
+    msg_list.append('           | Train sets = {}\t| Number of utts = {}\t| Number of spkrs = {}'.format(
+        train_split, len(tr_set), tr_set.spkr_num))
+    msg_list.append('           | Dev sets = {}\t| Number of utts = {}\t| Number of spkrs = {}'.format(
+        dev_split, len(dv_set), dv_set.spkr_num))
     msg_list.append('           | Batch size = {}\t\t| Bucketing = {}'.format(
         batch_size, bucketing))
     return msg_list
