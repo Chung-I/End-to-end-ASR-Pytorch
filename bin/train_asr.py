@@ -17,7 +17,7 @@ class Solver(BaseSolver):
 
     def fetch_data(self, data):
         ''' Move data to device and compute text seq. length'''
-        _, feat, feat_len, txt = data
+        _, feat, feat_len, txt, spkr_id = data
         feat = feat.to(self.device)
         feat_len = feat_len.to(self.device)
         txt = txt.to(self.device)
