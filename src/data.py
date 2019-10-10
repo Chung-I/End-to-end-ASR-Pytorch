@@ -12,7 +12,7 @@ HALF_BATCHSIZE_AUDIO_LEN = 800
 HALF_BATCHSIZE_TEXT_LEN = 150
 
 
-def collect_audio_batch(batch, audio_transform, mode):
+def collect_audio_batch(batch, audio_transform, mode, task):
     '''Collects a batch, should be list of tuples (audio_path <str>, list of int token <list>)
        e.g. [(file1,txt1),(file2,txt2),...] '''
 
@@ -38,7 +38,7 @@ def collect_audio_batch(batch, audio_transform, mode):
                 audio_len.append(len(f))
                 text.append(torch.LongTensor(b[1]))
                 # Testing without augmented data
-                if mode == 'test':
+                if task == 'asr' and mode == 'test':
                     break
 
     # Descending audio length within each batch
@@ -135,7 +135,7 @@ def create_textset(tokenizer, train_split, dev_split, name, path, bucketing, bat
     return tr_set, dv_set, tr_loader_bs, batch_size, msg_list
 
 
-def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text):
+def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, task='asr'):
     ''' Prepare dataloader for training/validation'''
 
     # Audio feature extractor
@@ -147,9 +147,9 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text):
         tokenizer, ascending, **corpus)
     # Collect function
     collect_tr = partial(
-        collect_audio_batch, audio_transform=audio_converter.wave_to_feat, mode=mode)
+        collect_audio_batch, audio_transform=audio_converter.wave_to_feat, mode=mode, task=task)
     collect_dv = partial(
-        collect_audio_batch, audio_transform=audio_converter.wave_to_feat, mode='test')
+        collect_audio_batch, audio_transform=audio_converter.wave_to_feat, mode='test', task=task)
     # Shuffle/drop applied to training set only
     shuffle = (mode == 'train' and not ascending)
     drop_last = shuffle

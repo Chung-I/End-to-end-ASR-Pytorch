@@ -48,7 +48,7 @@ class Solver(BaseSolver):
         ''' Load data for training/validation, store tokenizer and input/output shape'''
         self.tr_set, self.dv_set, self.tokenizer, self.audio_converter, msg = \
                          load_dataset(self.paras.njobs, self.paras.gpu, self.paras.pin_memory, 
-                                      self.curriculum>0, **self.config['data'])
+                                      self.curriculum>0, **self.config['data'], task='tts')
         self.vocab_size = self.tokenizer.vocab_size
         self.feat_dim, _ = self.audio_converter.feat_dim                  # ignore linear dim        
         self.verbose(msg)
@@ -164,7 +164,7 @@ class Solver(BaseSolver):
                 self.verbose('Curriculum learning ends after {} epochs, starting random sampling.'.format(n_epochs))
                 self.tr_set, _, _, _, _, _ = \
                          load_dataset(self.paras.njobs, self.paras.gpu, self.paras.pin_memory, 
-                                      False, **self.config['data'])
+                                      False, **self.config['data'], task='tts')
             for data in self.tr_set:
                 # Pre-step : update tf_rate/lr_rate and do zero_grad
                 tf_rate = self.optimizer.pre_step(self.step)
