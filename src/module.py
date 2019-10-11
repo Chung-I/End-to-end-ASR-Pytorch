@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Dict, Any
 from collections import OrderedDict
 from functools import reduce
 
@@ -25,6 +25,18 @@ Nonlinearities = {  # type: ignore
         "softsign": torch.nn.Softsign,
         "tanhshrink": torch.nn.Tanhshrink,
 }
+
+def batch_norm_2d_factory(freq_dim, channel_dim, momentum=0.1, eps=1e-05):
+    return nn.BatchNorm2d(channel_dim, momentum=momentum, eps=eps)
+
+def seq_batch_norm_factory(freq_dim, channel_dim, momentum=0.1, eps=1e-05):
+    return SeqBatchNorm(freq_dim * channel_dim, momentum=momentum, eps=eps)
+
+BATCH_NORM = {
+    "2d": batch_norm_2d_factory,
+    "1d": seq_batch_norm_factory
+}
+
 
 class LengthAwareWrapper(nn.Module):
     def __init__(self, module, pass_through: str = False):
@@ -700,9 +712,24 @@ class DecoderTaco(nn.Module):
         return (output.data <= eps).all()
 
 
+class SeqBatchNorm(nn.Module):
+    def __init__(self, input_size, **kwargs):
+        super(SeqBatchNorm, self).__init__()
+        self.input_size = input_size
+        self.bn = nn.BatchNorm1d(self.input_size, **kwargs)
+
+    def forward(self, inputs):
+        batch_size, n_channels, timesteps, feat_dim = inputs.size()
+        inputs = inputs.permute(0, 1, 3, 2).reshape(batch_size, -1, timesteps)
+        inputs = self.bn(inputs)
+        inputs = inputs.reshape(-1, n_channels, feat_dim, timesteps).permute(0, 1, 3, 2)
+        return inputs
+
+
 class VGGExtractor(nn.Module):
     ''' VGG extractor for ASR described in https://arxiv.org/pdf/1706.02737.pdf'''
-    def __init__(self, freq_dim, in_channel, nonlinearity: str = 'relu', batch_norm: bool = False):
+    def __init__(self, freq_dim, in_channel, nonlinearity: str = 'relu',
+                 batch_norm: Dict[str, Any] = None):
         super(VGGExtractor, self).__init__()
         self.init_dim = 64
         self.hide_dim = 128
@@ -711,26 +738,28 @@ class VGGExtractor(nn.Module):
         self.freq_dim = freq_dim
         self.out_dim = out_dim
         non_linear = Nonlinearities[nonlinearity]()
+        bn_type = batch_norm.pop('type') if batch_norm else None
 
         layers = [
             nn.Conv2d(in_channel, self.init_dim, 3, stride=1, padding=1),
-            nn.BatchNorm2d(self.init_dim) if batch_norm else None,
+            BATCH_NORM[bn_type](freq_dim, self.init_dim, **batch_norm) if batch_norm else None,
             non_linear,
             nn.Conv2d(self.init_dim, self.init_dim, 3, stride=1, padding=1),
-            nn.BatchNorm2d(self.init_dim) if batch_norm else None,
+            BATCH_NORM[bn_type](freq_dim, self.init_dim, **batch_norm) if batch_norm else None,
             non_linear,
             nn.MaxPool2d(2, stride=2), # Half-time dimension
             nn.Conv2d(self.init_dim, self.hide_dim, 3, stride=1, padding=1),
-            nn.BatchNorm2d(self.init_dim) if batch_norm else None,
+            BATCH_NORM[bn_type](freq_dim // 2, self.hide_dim, **batch_norm) if batch_norm else None,
             non_linear,
             nn.Conv2d(self.hide_dim, self.hide_dim, 3, stride=1, padding=1),
-            nn.BatchNorm2d(self.init_dim) if batch_norm else None,
+            BATCH_NORM[bn_type](freq_dim // 2, self.hide_dim, **batch_norm) if batch_norm else None,
             non_linear,
             nn.MaxPool2d(2, stride=2) # Half-time dimension
         ]
 
         layers = list(filter(lambda l: l is not None, layers))
         self.extractor = nn.Sequential(*layers)
+        print(self.extractor)
 
     def check_dim(self,input_dim):
         # Check input dimension, delta feature should be stack over channel. 

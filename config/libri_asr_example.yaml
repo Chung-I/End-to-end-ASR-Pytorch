@@ -53,7 +53,10 @@ model:                                    # Model architecture
     cnn:
       type: 'vgg'
       nonlinearity: 'relu'
-      batch_norm: True
+      batch_norm:
+        type: '1d'
+        momentum: 0.99
+        eps: 0.001
       # num_layers: 2
       # hidden_channel: 32
       # nonlinearity: relu
