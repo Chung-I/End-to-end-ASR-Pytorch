@@ -322,7 +322,8 @@ class Encoder(nn.Module):
         if cnn['type'] == 'vgg':
             self.vgg = True
             nonlinearity = cnn['nonlinearity'] if cnn.get('nonlinearity') else 'relu'
-            vgg_extractor = VGGExtractor(input_size, in_channel, nonlinearity)
+            batch_norm = cnn['batch_norm'] if cnn.get('batch_norm') else False
+            vgg_extractor = VGGExtractor(input_size, in_channel, nonlinearity, batch_norm)
             module_list.append(vgg_extractor)
             input_dim = vgg_extractor.out_dim
             self.sample_rate = self.sample_rate*4

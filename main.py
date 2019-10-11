@@ -4,6 +4,7 @@ import yaml
 import torch
 import argparse
 import numpy as np
+import random
 
 # For reproducibility, comment these may speed up training
 torch.backends.cudnn.deterministic = True
@@ -51,6 +52,7 @@ setattr(paras, 'pin_memory', not paras.no_pin)
 setattr(paras, 'verbose', not paras.no_msg)
 config = yaml.load(open(paras.config, 'r'), Loader=yaml.FullLoader)
 
+random.seed(paras.seed)
 np.random.seed(paras.seed)
 torch.manual_seed(paras.seed)
 if torch.cuda.is_available():

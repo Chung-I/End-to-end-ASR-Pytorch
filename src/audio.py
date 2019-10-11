@@ -1,9 +1,13 @@
+from typing import Dict
+from pathlib import Path
+from collections import namedtuple
+
 import torch
 import torchaudio
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from scipy import signal
+import scipy.signal
 
 import pandas as pd
 from lib.filters import create_mel_filterbank
@@ -19,7 +23,7 @@ REF_LEVEL_DB = 20
 MFCC_HOP_LEN_MS = 10
 MFCC_WIN_LEN_MS = 25
 N_MFCC_NO_DELTA = 13
-
+NoiseSource = namedtuple('NoiseSource', ['files', 'snr_range', 'n_files_range'])
 
 class CMVN(torch.jit.ScriptModule):
 
@@ -401,7 +405,7 @@ class AudioProcessor(nn.Module):
 
     def _inv_preemphasis(self, wav):
         """Note this is implemented in 'scipy' but not 'torch'!!"""
-        return signal.lfilter([1], [1, -0.97], wav)
+        return scipy.signal.lfilter([1], [1, -0.97], wav)
 
     def _amp_to_db(self, x, minimum=1e-5):
         return 20 * torch.log10(torch.clamp(x, min=minimum))
@@ -420,12 +424,19 @@ class AudioConverter(AudioProcessor):
     """A wrapper of AudioProcessor"""
 
     def __init__(self, num_freq, num_mels, frame_length_ms, frame_shift_ms, preemphasis_coeff,
-                 sample_rate, use_linear, snr_range, time_stretch_range, inverse_prob,
+                 sample_rate, use_linear, noise, snr_range, time_stretch_range, inverse_prob,
                  segment_file, segment_feat, min_segment_len):
         super(AudioConverter, self).__init__(
             num_freq, num_mels, frame_shift_ms, frame_length_ms,
             preemphasis_coeff, sample_rate)
         self.use_linear = use_linear
+        self.noise_root = Path(noise['path'])
+        self.noise_sources: Dict[str, NoiseSource] = {}
+        if noise.get('genre') is not None:
+            for noise_type, (_snr_range, n_files_range) in noise['genre'].items():
+                files = list(self.noise_root.joinpath(noise_type).rglob("*.wav"))
+                noise_source = NoiseSource(files, _snr_range, n_files_range)
+                self.noise_sources[noise_type] = noise_source
         self.snr_range = snr_range
         self.time_stretch_range = time_stretch_range
         self.inverse_prob = inverse_prob
@@ -485,16 +496,33 @@ class AudioConverter(AudioProcessor):
 
         # Augmentation
         apply_noise = -1 not in self.snr_range
+        apply_real_noise = len(self.noise_sources) > 0
+        (f"apply_real_noise: {apply_real_noise}")
         apply_time_stretch = not (
             self.time_stretch_range[0] == self.time_stretch_range[1] == 1)
         msp_aug = msp.clone()
-        if apply_noise or apply_time_stretch:
+        if apply_noise or apply_real_noise or apply_time_stretch:
             with torch.no_grad():
                 wave_aug = wave.clone()
                 # 1. Add noise
                 if apply_noise:
                     snr = random.uniform(self.snr_range[0], self.snr_range[1])
                     wave_aug = self.add_noise(wave_aug, snr)
+
+                if apply_real_noise:
+                    noise_type = random.choice(list(self.noise_sources.keys()))
+                    noise_files, snr_range, n_files_range = self.noise_sources[noise_type]
+                    n_files = random.randint(*n_files_range)
+                    noise_files = random.sample(noise_files, n_files)
+                    noises = []
+                    for noise_file in noise_files:
+                        noise = self.load(noise_file)
+                        noises.append(noise)
+
+                    snr = random.uniform(*snr_range)
+                    wave_aug = self.add_real_noise(wave_aug, noises, snr)
+                    # save as wavfile for debugging
+                    # torchaudio.save(str(Path("tmp").joinpath(noise_files[0].name)), wave_aug, self.sr)
 
                 # 2. Time stretch
                 if apply_time_stretch:
@@ -545,6 +573,31 @@ class AudioConverter(AudioProcessor):
             signal[ch] = s + (coeff * noise)
         return signal
 
+    def add_real_noise(self, signal, noises, snr):
+        signal_len = signal.shape[1]
+        aggregated_noise = torch.zeros(signal_len)
+
+        for noise in noises:
+            assert noise.shape[0] == 1
+            noise = noise[0]
+
+            noise_len = noise.shape[0]
+
+            if signal_len <= noise_len:
+                start = random.randint(0, noise_len - signal_len)
+                modified_noise = noise[start:start + signal_len]
+            else:
+                n_repeats = signal_len // noise_len + 1
+                modified_noise = noise.repeat(n_repeats)
+                modified_noise = modified_noise[:signal_len]
+
+            aggregated_noise += modified_noise
+
+        for ch, s in enumerate(signal):
+            coeff = snr_coeff(snr, s, aggregated_noise)
+            signal[ch] = s + (coeff * aggregated_noise)
+        return signal
+
     def _spectrogram(self, waveform, n_fft, win_length, hop_length, pad=0,
                      window_fn=torch.hann_window, power=2, normalized=False):
         window = window_fn(win_length)
@@ -569,12 +622,13 @@ def snr_coeff(snr, signal, noise):
 
 
 def load_audio_transform(num_freq, num_mels, frame_length_ms, frame_shift_ms,
-                         preemphasis_coeff, sample_rate, use_linear, snr_range, time_stretch_range,
+                         preemphasis_coeff, sample_rate, use_linear, noise, snr_range, time_stretch_range,
                          inverse_prob, segment_file=None, segment_feat=None, min_segment_len=2):
     ''' Return a audio converter specified by config '''
 
     audio_converter = AudioConverter(num_freq, num_mels, frame_length_ms, frame_shift_ms,
-                                     preemphasis_coeff, sample_rate, use_linear, snr_range, time_stretch_range, inverse_prob,
-                                     segment_file, segment_feat, min_segment_len)
+                                     preemphasis_coeff, sample_rate, use_linear, noise, snr_range,
+                                     time_stretch_range, inverse_prob, segment_file, segment_feat,
+                                     min_segment_len)
 
     return audio_converter

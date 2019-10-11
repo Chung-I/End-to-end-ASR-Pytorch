@@ -5,7 +5,7 @@ data:
     train_split: ['train-clean-100']      # Name of data splits to be used as training set
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 
-    batch_size: 24
+    batch_size: 12
   audio:
     num_freq: 1025
     num_mels: 80
@@ -15,6 +15,12 @@ data:
     sample_rate: 16000
     use_linear: False                      ### Return Linear spectrogram
     # augmentation
+    noise:
+      path: 'save/musan'
+      genre:
+        music: [[5, 15], [1,1]]
+        noise: [[0, 15], [1,1]]
+        speech: [[13, 20], [3,7]]
     snr_range: [-1]
     time_stretch_range: [1.0, 1.0]
     inverse_prob: 0.0
@@ -29,7 +35,7 @@ hparas:                                   # Experiment hyper-parameters
   tf_start: 1.0
   tf_end: 0.0
   tf_step: 500000
-  grad_clip: 'inf'
+  grad_clip: 5.0
   optimizer: 'SGD'
   nesterov: True
   momentum: 0.9
@@ -47,6 +53,7 @@ model:                                    # Model architecture
     cnn:
       type: 'vgg'
       nonlinearity: 'relu'
+      batch_norm: True
       # num_layers: 2
       # hidden_channel: 32
       # nonlinearity: relu
@@ -57,7 +64,7 @@ model:                                    # Model architecture
     layer_norm: [False,False,False,False,False]
     proj: [True,True,True,True,True]      # Linear projection + Tanh after each rnn layer
     sample_rate: [1,1,1,1,1]
-    sample_style: 'drop'                  # 'drop'/'concat'
+    sample_style: 'concat'                  # 'drop'/'concat'
   attention:
     mode: 'loc'                           # 'dot'/'loc'
     dim: 300
