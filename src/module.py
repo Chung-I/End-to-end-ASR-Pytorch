@@ -759,7 +759,6 @@ class VGGExtractor(nn.Module):
 
         layers = list(filter(lambda l: l is not None, layers))
         self.extractor = nn.Sequential(*layers)
-        print(self.extractor)
 
     def check_dim(self,input_dim):
         # Check input dimension, delta feature should be stack over channel. 
