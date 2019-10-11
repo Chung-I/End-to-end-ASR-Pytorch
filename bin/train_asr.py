@@ -189,7 +189,12 @@ class Solver(BaseSolver):
                                                                                                        ignore_repeat=True))
 
         # Ckpt if performance improves
-        for task in ['att','ctc']:
+        tasks = []
+        if self.model.enable_att:
+            tasks.append("att")
+        if self.model.enable_ctc:
+            tasks.append("ctc")
+        for task in tasks:
             dev_wer[task] = sum(dev_wer[task])/len(dev_wer[task])
             self.save_checkpoint('cur_{}.pth'.format(task),'wer',dev_wer[task])
             if dev_wer[task] < self.best_wer[task]:
