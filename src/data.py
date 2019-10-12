@@ -145,8 +145,9 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, ta
     # Text tokenizer
     tokenizer = load_text_encoder(**text)
     #Whether to extract feature in advance or not
-    wave_to_feat = audio_converter.wave_to_feat if corpus.get('in_memory') else None
-    collate_fn_wave_to_feat = lambda x: x if corpus.get('in_memory') else audio_converter.wave_to_feat
+    in_memory = corpus.pop('in_memory') if corpus.get('in_memory') else False
+    wave_to_feat = audio_converter.wave_to_feat if in_memory else None
+    collate_fn_wave_to_feat = lambda x: x if in_memory else audio_converter.wave_to_feat
     # Dataset (in testing mode, tr_set=dv_set, dv_set=tt_set)
     tr_set, dv_set, tr_loader_bs, dv_loader_bs, mode, data_msg = create_dataset(
         tokenizer, ascending, **corpus, wave_to_feat=wave_to_feat)

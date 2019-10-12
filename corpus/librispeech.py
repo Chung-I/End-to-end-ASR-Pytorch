@@ -4,12 +4,15 @@ from os.path import join, getsize
 from joblib import Parallel, delayed
 from torch.utils.data import Dataset
 
+from src.util import mp_progress_map
+
 # Additional (official) text src provided
 OFFICIAL_TXT_SRC = ['librispeech-lm-norm.txt']
 # Remove longest N sentence in librispeech-lm-norm.txt
 REMOVE_TOP_N_TXT = 5000000
 # Default num. of threads used for loading LibriSpeech
 READ_FILE_THREADS = 4
+
 
 
 def read_text(file):
@@ -60,7 +63,9 @@ class LibriDataset(Dataset):
         # Process wavefiles to features
         self.features = None
         if callable(wave_to_feat):
-            self.features = Parallel(n_jobs=READ_FILE_THREADS)(delayed(wave_to_feat)(f) for f in file_list)
+            #self.features = Parallel(n_jobs=READ_FILE_THREADS)(delayed(wave_to_feat)(f) for f in file_list)
+            self.features = mp_progress_map(wave_to_feat,
+                               ((f,) for f in file_list), READ_FILE_THREADS)
         # self.file_list, self.text = zip(*[(f_name, txt)
         #                                   for f_name, txt in sorted(zip(file_list, text),
         #                                   reverse=not ascending, key=lambda x:len(x[1]))])

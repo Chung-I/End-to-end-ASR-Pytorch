@@ -1,5 +1,7 @@
 import math
 import time
+import multiprocessing as mp
+
 import torch
 import numpy as np
 from torch import nn
@@ -226,3 +228,16 @@ def get_grad_norm(parameters, norm_type=2):
         total_norm = total_norm ** (1. / norm_type)
 
     return total_norm
+
+def mp_progress_map(func, arg_iter, num_workers):
+    rs = []
+    pool = mp.Pool(processes=num_workers)
+    for args in arg_iter:
+        rs.append(pool.apply_async(func, args))
+    pool.close()
+
+    rets = []
+    for r in tqdm(rs):
+        rets.append(r.get())
+    pool.join()
+    return rets
