@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from src.module import Encoder, Decoder, Postnet, CBHG, EncoderTaco, DecoderTaco, Linear, Highway
 
 
@@ -17,12 +18,14 @@ class RNNSimple(nn.Module):
         self.pred_layer = nn.Linear(spkr_dim, spkr_num, bias=False)
         self.loss_fn = loss_fn
 
-    def forward(self, input_feat, hidden_init=None):
+    def forward(self, input_feat, input_len, hidden_init=None):
         B = input_feat.size(0)
         input_feat = input_feat.squeeze()
-        _, (hidden, _) = self.embedder(input_feat, hidden_init)
+        input_feat_packed = pack_padded_sequence(
+            input_feat, input_len, batch_first=True)
+        _, (hidden, _) = self.embedder(input_feat_packed, hidden_init)
         spkr_embedding = self.linear(hidden[-1])
-        spkr_embedding = self.relu(spkr_embedding)
+        #spkr_embedding = self.relu(spkr_embedding)
         if self.loss_fn == 'softmax':
             spkr_pred = self.pred_layer(spkr_embedding)
             spkr_pred = F.softmax(spkr_pred, dim=-1)

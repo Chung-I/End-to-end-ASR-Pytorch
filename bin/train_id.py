@@ -212,6 +212,7 @@ class Solver(BaseSolver):
         #acc_loss, att_loss, emb_loss = None, None, None
         n_epochs = 0
         self.timer.set()
+        loss_history = []
 
         while self.step < self.max_step:
             # Renew dataloader to enable random sampling
@@ -250,13 +251,18 @@ class Solver(BaseSolver):
                                 feat_pred, feat[..., :feat_pred_len, :])
 
                 id_in_feat = hidden_outs if self.tts is None else feat_pred
-                _, spkr_pred = self.id_net(id_in_feat)
+                spkr_embedding, spkr_pred = self.id_net(id_in_feat, hidden_len)
                 if self.id_net.loss_fn == 'amsoftmax':
                     margin = 0.35
                     scale = 30
                     spkr_pred[np.arange(len(spkr_id)), spkr_id] -= margin
                     spkr_pred *= scale
                 total_loss = F.cross_entropy(spkr_pred, spkr_id)
+                loss_history.append(total_loss.cpu().item())
+
+                print(spkr_embedding[-1][-5:])
+                print(spkr_id[-1])
+                print(spkr_pred[-1][spkr_id[-1]])
 
                 self.timer.cnt('fw')
 
@@ -266,9 +272,14 @@ class Solver(BaseSolver):
 
                 # Logger
                 if (self.step == 1) or (self.step % self.PROGRESS_STEP == 0):
+                    loss = sum(loss_history)/len(loss_history)
+                    loss_history.clear()
                     self.progress('Tr stat | Loss - {:.2f} | Grad. Norm - {:.4f} | {}'
-                                  .format(total_loss.cpu().item(), grad_norm, self.timer.show()))
-                    self.write_log('loss', {'tr_id': total_loss})
+                                  .format(loss, grad_norm, self.timer.show()))
+                    self.write_log('loss', {'tr_id': loss})
+                    # self.progress('Tr stat | Loss - {:.2f} | Grad. Norm - {:.4f} | {}'
+                    #              .format(total_loss.cpu().item(), grad_norm, self.timer.show()))
+                    #self.write_log('loss', {'tr_id': total_loss})
 
                 # Validation
                 # if (self.step == 1) or (self.step % self.valid_step == 0):
