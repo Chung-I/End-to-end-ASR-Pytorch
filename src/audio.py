@@ -472,6 +472,7 @@ class AudioConverter(AudioProcessor):
     def wave_to_feat(self, file):
         # -- old -- #
         # sp, msp = self.extract_feature_from_waveform(wave)
+        file = str(file)
         wave = self.load(file)
         _sp, _msp = self.extract_feature_from_waveform(wave)
         # _mfcc = self.extract_mfcc_from_file(file)

@@ -6,6 +6,7 @@ data:
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 
     batch_size: 12
+    in_memory: True
   audio:
     num_freq: 1025
     num_mels: 80

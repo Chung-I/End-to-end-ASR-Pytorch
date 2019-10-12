@@ -26,7 +26,7 @@ def read_text(file):
 
 
 class LibriDataset(Dataset):
-    def __init__(self, path, split, tokenizer, bucket_size, ascending=False):
+    def __init__(self, path, split, tokenizer, bucket_size, ascending=False, wave_to_feat=None):
         # Setup
         self.path = path
         self.bucket_size = bucket_size
@@ -51,21 +51,32 @@ class LibriDataset(Dataset):
             delayed(read_text)(str(f)) for f in file_list)
         #text = Parallel(n_jobs=-1)(delayed(tokenizer.encode)(txt) for txt in text)
         text = [tokenizer.encode(txt) for txt in text]
-
+        # get indices that would sort an array
+        indices = sorted(range(len(text)), reverse=not ascending, key=lambda idx: len(text.__getitem__(idx)))
         # Sort dataset by text length
         #file_len = Parallel(n_jobs=READ_FILE_THREADS)(delayed(getsize)(f) for f in file_list)
-        self.file_list, self.text = zip(*[(f_name, txt)
-                                          for f_name, txt in sorted(zip(file_list, text), reverse=not ascending, key=lambda x:len(x[1]))])
+        self.file_list = [file_list[idx] for idx in indices]
+        self.text = [text[idx] for idx in indices]
+        # Process wavefiles to features
+        self.features = None
+        if callable(wave_to_feat):
+            self.features = Parallel(n_jobs=READ_FILE_THREADS)(delayed(wave_to_feat)(f) for f in file_list)
+        # self.file_list, self.text = zip(*[(f_name, txt)
+        #                                   for f_name, txt in sorted(zip(file_list, text),
+        #                                   reverse=not ascending, key=lambda x:len(x[1]))])
 
     def __getitem__(self, index):
         if self.bucket_size > 1:
             # Return a bucket
             index = min(len(self.file_list)-self.bucket_size, index)
-            return [(f_path, txt, self.get_id(f_path)) for f_path, txt in
-                    zip(self.file_list[index:index+self.bucket_size], self.text[index:index+self.bucket_size])]
+            return [(self.file_list[idx] if self.features is None else self.features[idx],
+                     self.text[idx], self.get_id(self.file_list[idx])) for idx in
+                    range(index, index + self.bucket_size)]
+                    #zip(self.file_list[index:index+self.bucket_size], self.text[index:index+self.bucket_size])]
         else:
             f_path = self.file_list[index]
-            return f_path, self.text[index], self.get_id(f_path)
+            feat = f_path if self.features is None else self.features[index]
+            return feat, self.text[index], self.get_id(f_path)
 
     def __len__(self):
         return len(self.file_list)

@@ -20,7 +20,7 @@ def collect_audio_batch(batch, audio_transform, mode, task):
     if type(batch[0]) is not tuple:
         batch = batch[0]
     # Make sure that batch size is reasonable
-    first_feat = audio_transform(str(batch[0][0]))
+    first_feat = audio_transform(batch[0][0])
     first_len = first_feat[0].shape[0]
 
     if first_len > HALF_BATCHSIZE_AUDIO_LEN and mode == 'train':
@@ -30,7 +30,7 @@ def collect_audio_batch(batch, audio_transform, mode, task):
     file, audio_feat, audio_len, text, spkr_id = [], [], [], [], []
     with torch.no_grad():
         for b in batch:
-            feat = audio_transform(str(b[0]))
+            feat = audio_transform(b[0])
             # feat may be (mel_sp) or (mel_sp, mel_sp_augmented)
             for f in feat:
                 file.append(str(b[0]).split('/')[-1].split('.')[0])
@@ -72,7 +72,8 @@ def collect_text_batch(batch, mode):
 
 
 def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
-                   train_split=None, dev_split=None, test_split=None):
+                   train_split=None, dev_split=None, test_split=None,
+                   wave_to_feat=None):
     ''' Interface for creating all kinds of dataset'''
 
     # Recognize corpus
@@ -89,9 +90,9 @@ def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
         bucket_size = batch_size if bucketing and (
             not ascending) else 1  # Ascending without bucketing
         # Do not use bucketing for dev set
-        dv_set = Dataset(path, dev_split, tokenizer, 1)
+        dv_set = Dataset(path, dev_split, tokenizer, 1, wave_to_feat=wave_to_feat)
         tr_set = Dataset(path, train_split, tokenizer,
-                         bucket_size, ascending=ascending)
+                         bucket_size, ascending=ascending, wave_to_feat=wave_to_feat)
         # Messages to show
         msg_list = _data_msg(name, path, train_split.__str__(), tr_set,
                              dev_split.__str__(), dv_set, batch_size, bucketing)
@@ -101,9 +102,9 @@ def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
         # Testing model
         mode = 'test'
         # Do not use bucketing for dev set
-        dv_set = Dataset(path, dev_split, tokenizer, 1)
+        dv_set = Dataset(path, dev_split, tokenizer, 1, wave_to_feat=wave_to_feat)
         # Do not use bucketing for test set
-        tt_set = Dataset(path, test_split, tokenizer, 1)
+        tt_set = Dataset(path, test_split, tokenizer, 1, wave_to_feat=wave_to_feat)
         # Messages to show
         msg_list = _data_msg(name, path, dev_split.__str__(), len(dv_set),
                              test_split.__str__(), len(tt_set), batch_size, False)
@@ -143,14 +144,17 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, ta
     audio_converter = load_audio_transform(**audio)
     # Text tokenizer
     tokenizer = load_text_encoder(**text)
+    #Whether to extract feature in advance or not
+    wave_to_feat = audio_converter.wave_to_feat if corpus.get('in_memory') else None
+    collate_fn_wave_to_feat = lambda x: x if corpus.get('in_memory') else audio_converter.wave_to_feat
     # Dataset (in testing mode, tr_set=dv_set, dv_set=tt_set)
     tr_set, dv_set, tr_loader_bs, dv_loader_bs, mode, data_msg = create_dataset(
-        tokenizer, ascending, **corpus)
+        tokenizer, ascending, **corpus, wave_to_feat=wave_to_feat)
     # Collect function
     collect_tr = partial(
-        collect_audio_batch, audio_transform=audio_converter.wave_to_feat, mode=mode, task=task)
+        collect_audio_batch, audio_transform=collate_fn_wave_to_feat, mode=mode, task=task)
     collect_dv = partial(
-        collect_audio_batch, audio_transform=audio_converter.wave_to_feat, mode='test', task=task)
+        collect_audio_batch, audio_transform=collate_fn_wave_to_feat, mode='test', task=task)
     # Shuffle/drop applied to training set only
     shuffle = (mode == 'train' and not ascending)
     drop_last = shuffle
