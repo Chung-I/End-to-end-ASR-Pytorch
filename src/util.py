@@ -1,8 +1,13 @@
+from typing import Callable
+from pathlib import Path
+import os
+
 import math
 import time
 from tqdm import tqdm
 import multiprocessing as mp
 
+from numpy.lib.format import open_memmap
 import torch
 import numpy as np
 from torch import nn
@@ -230,6 +235,7 @@ def get_grad_norm(parameters, norm_type=2):
 
     return total_norm
 
+
 def mp_progress_map(func, arg_iter, num_workers):
     rs = []
     pool = mp.Pool(processes=num_workers)
@@ -242,3 +248,50 @@ def mp_progress_map(func, arg_iter, num_workers):
         rets.append(r.get())
     pool.join()
     return rets
+
+
+def wave_to_feat_and_save_factory(wave_to_feat: Callable):
+    global func
+    def func(wavfile):
+        feat = wave_to_feat(wavfile)
+        wavfile = Path(wavfile)
+        feat_file = wavfile.with_suffix('.pt')
+        aug_feat_file = None
+        aug_feat_len = None
+        if isinstance(feat, tuple):
+            feat, aug_feat = feat
+            aug_feat_len = aug_feat.shape[0]
+            aug_feat_file = wavfile.with_suffix('.aug.pt')
+            torch.save(aug_feat, aug_feat_file)
+        feat_len = feat.shape[0]
+        torch.save(feat, feat_file)
+        return feat_len, feat_file, aug_feat_len, aug_feat_file
+
+    return func
+
+
+def write_sliced_array(sequence, out_path, total_len,
+                       dtype='float32', func=None):
+    print('writing into sliced array...')
+    tbar = tqdm(total=len(sequence))
+    it = ((func(x), x) if func else (x, x) for x in sequence)
+    x, path = next(it)
+    #shape = (x.shape[0], total_len)
+    shape = (total_len, x.shape[1])
+    data = open_memmap(out_path, mode='w+', dtype=dtype, shape=shape)
+
+    def put(entry, prev):
+        now = prev + entry.shape[0]
+        #data[:, prev:now] = entry
+        data[prev:now, :] = entry
+        tbar.update(1)
+        return now
+    prev = put(x, 0)
+    for x, path in it:
+        prev = put(x, prev)
+        if isinstance(path, Path):
+            os.remove(path)
+    tbar.close()
+    print('flushing...')
+    data.flush()
+    print('done.')

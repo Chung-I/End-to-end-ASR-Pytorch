@@ -1,18 +1,22 @@
+from typing import Callable
+
 from tqdm import tqdm
 from pathlib import Path
 from os.path import join, getsize
 from joblib import Parallel, delayed
+import numpy as np
+
+import torch
 from torch.utils.data import Dataset
 
-from src.util import mp_progress_map
+from src.util import mp_progress_map, wave_to_feat_and_save_factory, write_sliced_array
 
 # Additional (official) text src provided
 OFFICIAL_TXT_SRC = ['librispeech-lm-norm.txt']
 # Remove longest N sentence in librispeech-lm-norm.txt
 REMOVE_TOP_N_TXT = 5000000
 # Default num. of threads used for loading LibriSpeech
-READ_FILE_THREADS = 4
-
+READ_FILE_THREADS = 12
 
 
 def read_text(file):
@@ -35,10 +39,65 @@ class LibriDataset(Dataset):
         self.bucket_size = bucket_size
 
         # List all wave files
+
+        # Process wavefiles to features
+        list_of_features = []
+        list_of_feat_lens = []
+        list_of_aug_features = []
+        list_of_aug_feat_lens = []
         file_list, spkr_id_list = [], []
+
+        if not callable(wave_to_feat):
+            for s in split:
+                file_list += list(Path(join(path, s)).rglob("*.flac"))
+        else:
+            pt_path_to_np_array = lambda path: torch.load(path).numpy()
+            for s in split:
+                split_dir = Path(join(path, s))
+                data_file = split_dir.joinpath('data.npy')
+                aug_data_file = split_dir.joinpath('aug_data.npy')
+                if not data_file.exists():
+                    files = list(split_dir.rglob("*.flac"))
+                    with open(data_file.with_name("files.txt"), 'w') as fp:
+                        fp.write("\n".join([str(f.relative_to(split_dir)) for f in files]))
+
+                    feat_lens, feat_names, aug_feat_lens, aug_feat_names = \
+                        zip(*mp_progress_map(wave_to_feat_and_save_factory(wave_to_feat),
+                                             ((f,) for f in files), READ_FILE_THREADS))
+
+                    write_sliced_array(feat_names, str(data_file), sum(feat_lens),
+                                       func=pt_path_to_np_array)
+                    np.save(data_file.with_name("lens.npy"), np.array(feat_lens))
+
+                    if aug_feat_lens[0] is not None:
+                        write_sliced_array(aug_feat_names, str(aug_data_file),
+                                           sum(aug_feat_lens), func=pt_path_to_np_array)
+                        np.save(data_file.with_name("aug_lens.npy"), np.array(aug_feat_lens))
+                else:
+                    with open(data_file.with_name("files.txt")) as fp:
+                        files = [split_dir.joinpath(line) for line in fp.read().splitlines()]
+                    print(f"feature file {data_file} exists; loading")
+                list_of_features.append(torch.from_numpy(np.load(data_file)))
+                feat_lens = np.load(data_file.with_name("lens.npy"))
+                list_of_feat_lens.append(feat_lens)
+
+                if aug_data_file.exists():
+                    print(f"augmented feature file {aug_data_file} exists; loading")
+                    list_of_aug_features.append(torch.from_numpy(np.load(aug_data_file)))
+                    aug_feat_lens = np.load(aug_data_file.with_name("aug_lens.npy"))
+                    list_of_aug_feat_lens.append(aug_feat_lens)
+
+                file_list += files
+
+            self.features = torch.cat(list_of_features, dim=0)
+            self.aug_features = torch.cat(list_of_aug_features, dim=0)
+            self.feat_ptr = np.pad(np.concatenate(list_of_feat_lens, axis=0), (1, 0)).cumsum() \
+                if list_of_feat_lens else None
+            self.aug_feat_ptr = np.pad(np.concatenate(list_of_aug_feat_lens, axis=0), (1, 0)).cumsum() \
+                if list_of_aug_feat_lens else None
+
         self.spkr_id_dict = {}
         for s in split:
-            file_list += list(Path(join(path, s)).rglob("*.flac"))
             spkr_id_list += sorted([int(item.name)
                                     for item in Path(join(path, s)).iterdir() if item.is_dir()])
         assert len(file_list) > 0, "No data found @ {}".format(path)
@@ -52,36 +111,30 @@ class LibriDataset(Dataset):
         # Read text
         text = Parallel(n_jobs=READ_FILE_THREADS)(
             delayed(read_text)(str(f)) for f in file_list)
-        #text = Parallel(n_jobs=-1)(delayed(tokenizer.encode)(txt) for txt in text)
         text = [tokenizer.encode(txt) for txt in text]
-        # get indices that would sort an array
+
         indices = sorted(range(len(text)), reverse=not ascending, key=lambda idx: len(text.__getitem__(idx)))
-        # Sort dataset by text length
-        #file_len = Parallel(n_jobs=READ_FILE_THREADS)(delayed(getsize)(f) for f in file_list)
         self.file_list = [file_list[idx] for idx in indices]
         self.text = [text[idx] for idx in indices]
-        # Process wavefiles to features
-        self.features = None
-        if callable(wave_to_feat):
-            #self.features = Parallel(n_jobs=READ_FILE_THREADS)(delayed(wave_to_feat)(f) for f in file_list)
-            self.features = mp_progress_map(wave_to_feat,
-                               ((f,) for f in file_list), READ_FILE_THREADS)
-        # self.file_list, self.text = zip(*[(f_name, txt)
-        #                                   for f_name, txt in sorted(zip(file_list, text),
-        #                                   reverse=not ascending, key=lambda x:len(x[1]))])
+
+        if self.features is None:
+            self.get_feat = lambda idx: self.file_list[idx]
+        elif self.aug_features is None:
+            self.get_feat = lambda idx: (self.features[feat_ptr[idx]:feat_ptr[idx+1]],)
+        else:
+            self.get_feat = lambda idx: (self.features[feat_ptr[idx]:feat_ptr[idx+1]],
+                                         self.aug_features[aug_feat_ptr[idx]:aug_feat_ptr[idx+1]])
 
     def __getitem__(self, index):
+
         if self.bucket_size > 1:
             # Return a bucket
             index = min(len(self.file_list)-self.bucket_size, index)
-            return [(self.file_list[idx] if self.features is None else self.features[idx],
-                     self.text[idx], self.get_id(self.file_list[idx])) for idx in
+            return [(self.get_feat(idx), self.text[idx], self.get_id(self.file_list[idx])) for idx in
                     range(index, index + self.bucket_size)]
                     #zip(self.file_list[index:index+self.bucket_size], self.text[index:index+self.bucket_size])]
         else:
-            f_path = self.file_list[index]
-            feat = f_path if self.features is None else self.features[index]
-            return feat, self.text[index], self.get_id(f_path)
+            return self.get_feat(index), self.text[index], self.get_id(self.file_list[index])
 
     def __len__(self):
         return len(self.file_list)

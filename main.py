@@ -33,6 +33,7 @@ parser.add_argument('--test', action='store_true', help='Test the model.')
 parser.add_argument('--no-msg', action='store_true', help='Hide all messages.')
 parser.add_argument('--lm', action='store_true', help='Option for training RNNLM.')
 parser.add_argument('--tts', action='store_true', help='Option for training TTS.')
+parser.add_argument('--prep', action='store_true', help='Option for preparing data.')
 parser.add_argument('--amp', action='store_true', help='Option to enable AMP.')
 parser.add_argument('--reserve_gpu', default=0, type=float, help='Option to reserve GPU ram for training.')
 parser.add_argument('--jit', action='store_true', help='Option for enabling jit in pytorch. (feature in development)')
@@ -55,6 +56,9 @@ if paras.gpu and paras.reserve_gpu>0:
 if paras.lm:
     # Train RNNLM
     from bin.train_lm import Solver
+    mode = 'train'
+elif paras.prep:
+    from bin.prep import Solver
     mode = 'train'
 elif paras.tts:
     from bin.train_tts import Solver
