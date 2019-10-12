@@ -41,6 +41,8 @@ class LibriDataset(Dataset):
         # List all wave files
 
         # Process wavefiles to features
+        self.features = None
+        self.aug_features = None
         list_of_features = []
         list_of_feat_lens = []
         list_of_aug_features = []
@@ -91,9 +93,9 @@ class LibriDataset(Dataset):
 
             self.features = torch.cat(list_of_features, dim=0)
             self.aug_features = torch.cat(list_of_aug_features, dim=0)
-            self.feat_ptr = np.pad(np.concatenate(list_of_feat_lens, axis=0), (1, 0)).cumsum() \
+            feat_ptr = np.pad(np.concatenate(list_of_feat_lens, axis=0), (1, 0)).cumsum() \
                 if list_of_feat_lens else None
-            self.aug_feat_ptr = np.pad(np.concatenate(list_of_aug_feat_lens, axis=0), (1, 0)).cumsum() \
+            aug_feat_ptr = np.pad(np.concatenate(list_of_aug_feat_lens, axis=0), (1, 0)).cumsum() \
                 if list_of_aug_feat_lens else None
 
         self.spkr_id_dict = {}
@@ -116,14 +118,16 @@ class LibriDataset(Dataset):
         indices = sorted(range(len(text)), reverse=not ascending, key=lambda idx: len(text.__getitem__(idx)))
         self.file_list = [file_list[idx] for idx in indices]
         self.text = [text[idx] for idx in indices]
+        feat_intvls = [(feat_ptr[idx], feat_ptr[idx+1]) for idx in indices]
+        aug_feat_intvls = [(aug_feat_ptr[idx], aug_feat_ptr[idx+1]) for idx in indices]
 
         if self.features is None:
             self.get_feat = lambda idx: self.file_list[idx]
         elif self.aug_features is None:
-            self.get_feat = lambda idx: (self.features[feat_ptr[idx]:feat_ptr[idx+1]],)
+            self.get_feat = lambda idx: (self.features[feat_intvls[idx][0]:feat_intvls[idx][1]],)
         else:
-            self.get_feat = lambda idx: (self.features[feat_ptr[idx]:feat_ptr[idx+1]],
-                                         self.aug_features[aug_feat_ptr[idx]:aug_feat_ptr[idx+1]])
+            self.get_feat = lambda idx: (self.features[feat_intvls[idx][0]:feat_intvls[idx][1]],
+                                         self.aug_features[aug_feat_intvls[idx][0]:aug_feat_intvls[idx][1]])
 
     def __getitem__(self, index):
 
