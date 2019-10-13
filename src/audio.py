@@ -472,8 +472,13 @@ class AudioConverter(AudioProcessor):
     def wave_to_feat(self, file):
         # -- old -- #
         # sp, msp = self.extract_feature_from_waveform(wave)
-        file = str(file)
-        wave = self.load(file)
+        if isinstance(file, Path) or isinstance(file, str):
+            file = str(file)
+            wave = self.load(file)
+        elif isinstance(file, torch.Tensor):
+            wave = file
+        else:
+            raise NotImplementedError
         _sp, _msp = self.extract_feature_from_waveform(wave)
         # _mfcc = self.extract_mfcc_from_file(file)
         # Reshape (T, D)

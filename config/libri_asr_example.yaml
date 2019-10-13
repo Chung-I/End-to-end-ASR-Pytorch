@@ -6,7 +6,7 @@ data:
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 
     batch_size: 12
-    in_memory: True
+    in_memory: 'wave'
   audio:
     num_freq: 1025
     num_mels: 80
@@ -55,9 +55,9 @@ model:                                    # Model architecture
     cnn:
       type: 'vgg'
       nonlinearity: 'relu'
-      # batch_norm:
-      #   type: '1d'
-      #   momentum: 0.99
+      batch_norm:
+        type: '1d'
+        momentum: 0.99
       # num_layers: 2
       # hidden_channel: 32
       # nonlinearity: relu

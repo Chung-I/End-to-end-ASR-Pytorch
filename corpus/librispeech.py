@@ -5,6 +5,7 @@ from pathlib import Path
 from os.path import join, getsize
 from joblib import Parallel, delayed
 import numpy as np
+import torchaudio
 
 import torch
 from torch.utils.data import Dataset
@@ -49,10 +50,14 @@ class LibriDataset(Dataset):
         list_of_aug_feat_lens = []
         file_list, spkr_id_list = [], []
 
-        if not callable(wave_to_feat):
+        if not in_memory:
             for s in split:
                 file_list += list(Path(join(path, s)).rglob("*.flac"))
-        else:
+        elif in_memory == 'wave':
+            for s in split:
+                file_list += list(Path(join(path, s)).rglob("*.flac"))
+            file_list, _ = zip(*mp_progress_map(torchaudio.load, ((f,) for f in file_list), READ_FILE_THREADS))
+        elif in_memory == True or in_memory == 'mmap':
             pt_path_to_np_array = lambda path: torch.load(path).numpy()
             mmap_mode = 'r' if in_memory == 'mmap' else None
             for s in split:
@@ -91,6 +96,8 @@ class LibriDataset(Dataset):
                     list_of_aug_feat_lens.append(aug_feat_lens)
 
                 file_list += files
+        else:
+            raise NotImplementedError
 
             self.features = torch.cat(list_of_features, dim=0) \
                 if len(list_of_features) > 1 else list_of_features[0]
