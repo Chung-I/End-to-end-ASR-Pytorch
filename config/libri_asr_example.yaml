@@ -1,7 +1,7 @@
 data:
   corpus:                                 
     name: 'Librispeech'                   # Specify corpus
-    path: 'save/LibriSpeech'          # Path to raw LibriSpeech dataset
+    path: 'save/pj_icassp'          # Path to raw LibriSpeech dataset
     train_split: ['train-clean-100']      # Name of data splits to be used as training set
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 
@@ -66,7 +66,7 @@ model:                                    # Model architecture
     dropout: [0,0,0,0,0]
     layer_norm: [False,False,False,False,False]
     proj: [True,True,True,True,True]      # Linear projection + Tanh after each rnn layer
-    sample_rate: [1,1,1,1,1]
+    sample_rate: [1,2,1,1,1]
     sample_style: 'concat'                  # 'drop'/'concat'
   attention:
     mode: 'loc'                           # 'dot'/'loc'

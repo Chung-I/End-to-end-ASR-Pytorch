@@ -93,9 +93,9 @@ class LibriDataset(Dataset):
 
             self.features = torch.cat(list_of_features, dim=0)
             self.aug_features = torch.cat(list_of_aug_features, dim=0)
-            feat_ptr = np.pad(np.concatenate(list_of_feat_lens, axis=0), (1, 0)).cumsum() \
+            feat_ptr = np.pad(np.concatenate(list_of_feat_lens, axis=0), (1, 0), mode='constant').cumsum() \
                 if list_of_feat_lens else None
-            aug_feat_ptr = np.pad(np.concatenate(list_of_aug_feat_lens, axis=0), (1, 0)).cumsum() \
+            aug_feat_ptr = np.pad(np.concatenate(list_of_aug_feat_lens, axis=0), (1, 0), mode='constant').cumsum() \
                 if list_of_aug_feat_lens else None
 
         self.spkr_id_dict = {}
