@@ -1,4 +1,3 @@
-mkdir -p log/$2
-cp $1 log/$2
-export CUDA_VISIBLE_DEVICES=$3
-python3 main.py --config $1 --name $2 --logdir log --ckpdir checkpoint --outdir save --njobs 6 --seed 0 $4
+mkdir -p log/$1
+cp config/libri_asr_example.yaml log/$1
+python3 main.py --config log/$1/libri_asr_example.yaml --name $1 --logdir log --ckpdir checkpoint --outdir save --njobs 10 --seed 0 $2

@@ -3,8 +3,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 import numpy as np
 
 class Optimizer():
-    def __init__(self, parameters, optimizer, lr, lr_scheduler, tf_start=1, tf_end=1, tf_step=1,
-                 recon_init_weight=1.0, recon_decay=0.0, nesterov=False, momentum=0.0, **kwargs):
+    def __init__(self, parameters, optimizer, lr_scheduler, tf_start=1, tf_end=1, tf_step=1,
+                 recon_init_weight=1.0, recon_decay=0.0, **kwargs):
         
         # Setup teacher forcing scheduler
         self.tf_rate = lambda step: max(tf_end, tf_start-(tf_start-tf_end)*step/tf_step)
@@ -13,26 +13,22 @@ class Optimizer():
 
         # Setup torch optimizer
         self.tf_type = tf_end!=1
-        self.opt_type = optimizer
+        self.opt_type = optimizer['type']
+        init_lr = optimizer['lr']
         self.sch_type = lr_scheduler
-        opt = getattr(torch.optim,optimizer)
+        opt = getattr(torch.optim,optimizer.pop('type'))
+        self.opt = opt(parameters,**optimizer)
         if lr_scheduler['type'] == 'warmup':
             warmup_step = 4000.0
-            init_lr = lr
             self.lr_scheduler = lambda step: init_lr * warmup_step **0.5 * np.minimum((step+1)*warmup_step**-1.5,(step+1)**-0.5 )
-            self.opt = opt(parameters,lr=1.0)
         elif lr_scheduler['type'] == 'decay':
             warmup_step = 1000.0
-            init_lr = lr
             self.lr_scheduler = lambda step: init_lr * warmup_step **0.5 * np.minimum((step+1)*warmup_step**-1.5,(step+1)**-0.5 )
-            self.opt = opt(parameters,lr=1.0)
         elif lr_scheduler['type'] == 'reduce_lr_on_plateau':
             lr_scheduler.pop('type')
-            self.opt = opt(parameters,lr=lr, nesterov=nesterov, momentum=momentum)
             self.lr_scheduler = ReduceLROnPlateau(self.opt, **lr_scheduler)
         else:
             self.lr_scheduler = None
-            self.opt = opt(parameters,lr=lr, nesterov=nesterov, momentum=momentum)
 
     def get_opt_state_dict(self):
         return self.opt.state_dict()

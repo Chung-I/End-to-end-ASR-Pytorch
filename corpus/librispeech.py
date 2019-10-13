@@ -33,7 +33,7 @@ def read_text(file):
 
 
 class LibriDataset(Dataset):
-    def __init__(self, path, split, tokenizer, bucket_size, ascending=False, wave_to_feat=None):
+    def __init__(self, path, split, tokenizer, bucket_size, ascending=False, wave_to_feat=None, in_memory=False):
         # Setup
         self.path = path
         self.bucket_size = bucket_size
@@ -54,6 +54,7 @@ class LibriDataset(Dataset):
                 file_list += list(Path(join(path, s)).rglob("*.flac"))
         else:
             pt_path_to_np_array = lambda path: torch.load(path).numpy()
+            mmap_mode = 'r' if in_memory == 'mmap' else None
             for s in split:
                 split_dir = Path(join(path, s))
                 data_file = split_dir.joinpath('data.npy')
@@ -79,20 +80,22 @@ class LibriDataset(Dataset):
                     with open(data_file.with_name("files.txt")) as fp:
                         files = [split_dir.joinpath(line) for line in fp.read().splitlines()]
                     print(f"feature file {data_file} exists; loading")
-                list_of_features.append(torch.from_numpy(np.load(data_file)))
+                list_of_features.append(torch.from_numpy(np.load(data_file, mmap_mode=mmap_mode)))
                 feat_lens = np.load(data_file.with_name("lens.npy"))
                 list_of_feat_lens.append(feat_lens)
 
                 if aug_data_file.exists():
                     print(f"augmented feature file {aug_data_file} exists; loading")
-                    list_of_aug_features.append(torch.from_numpy(np.load(aug_data_file)))
+                    list_of_aug_features.append(torch.from_numpy(np.load(aug_data_file, mmap_mode=mmap_mode)))
                     aug_feat_lens = np.load(aug_data_file.with_name("aug_lens.npy"))
                     list_of_aug_feat_lens.append(aug_feat_lens)
 
                 file_list += files
 
-            self.features = torch.cat(list_of_features, dim=0)
-            self.aug_features = torch.cat(list_of_aug_features, dim=0)
+            self.features = torch.cat(list_of_features, dim=0) \
+                if len(list_of_features) > 1 else list_of_features[0]
+            self.aug_features = torch.cat(list_of_aug_features, dim=0) \
+                if len(list_of_aug_features) > 1 else list_of_aug_features[0]
             feat_ptr = np.pad(np.concatenate(list_of_feat_lens, axis=0), (1, 0), mode='constant').cumsum() \
                 if list_of_feat_lens else None
             aug_feat_ptr = np.pad(np.concatenate(list_of_aug_feat_lens, axis=0), (1, 0), mode='constant').cumsum() \
@@ -118,8 +121,10 @@ class LibriDataset(Dataset):
         indices = sorted(range(len(text)), reverse=not ascending, key=lambda idx: len(text.__getitem__(idx)))
         self.file_list = [file_list[idx] for idx in indices]
         self.text = [text[idx] for idx in indices]
-        feat_intvls = [(feat_ptr[idx], feat_ptr[idx+1]) for idx in indices]
-        aug_feat_intvls = [(aug_feat_ptr[idx], aug_feat_ptr[idx+1]) for idx in indices]
+        if self.features is not None:
+            feat_intvls = [(feat_ptr[idx], feat_ptr[idx+1]) for idx in indices]
+        if self.aug_features is not None:
+            aug_feat_intvls = [(aug_feat_ptr[idx], aug_feat_ptr[idx+1]) for idx in indices]
 
         if self.features is None:
             self.get_feat = lambda idx: self.file_list[idx]

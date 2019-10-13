@@ -5,7 +5,8 @@ data:
     train_split: ['train-clean-100']      # Name of data splits to be used as training set
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 
-    batch_size: 24
+    batch_size: 12
+    in_memory: 'mmap'
   audio:
     num_freq: 1025
     num_mels: 80
@@ -15,6 +16,12 @@ data:
     sample_rate: 16000
     use_linear: False                      ### Return Linear spectrogram
     # augmentation
+    noise:
+      path: 'save/musan'
+      genre:
+        music: [[5, 15], [1,1]]
+        noise: [[0, 15], [1,1]]
+        speech: [[13, 20], [3,7]]
     snr_range: [-1]
     time_stretch_range: [1.0, 1.0]
     inverse_prob: 0.0
@@ -25,13 +32,14 @@ data:
 hparas:                                   # Experiment hyper-parameters
   valid_step: 1000
   curriculum: 0
-  max_step: 350001
+  max_step: 15001
   tf_start: 1.0
   tf_end: 1.0
   tf_step: 500000
   grad_clip: 'inf'
-  optimizer: 'Adam'
-  lr: 0.001
+  optimizer:
+    type: 'Adam'
+    lr: 0.001
   lr_scheduler:
     type: 'warmup'                   # 'fixed'/'warmup'/'decay'/'reduce_lr_on_plateau'
   freq_loss_type: 'l1'                         # 'l1'/'mse'
@@ -67,7 +75,7 @@ model:                                    # Model architecture
     dropout: 0
 tts:
   # type: 'highway'
-  layer_num: 12
+  layer_num: 9
   num_layers: 4
     # encoder:
     #   layer_num: 4

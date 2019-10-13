@@ -73,7 +73,7 @@ def collect_text_batch(batch, mode):
 
 def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
                    train_split=None, dev_split=None, test_split=None,
-                   wave_to_feat=None):
+                   wave_to_feat=None, in_memory=False):
     ''' Interface for creating all kinds of dataset'''
 
     # Recognize corpus
@@ -90,9 +90,9 @@ def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
         bucket_size = batch_size if bucketing and (
             not ascending) else 1  # Ascending without bucketing
         # Do not use bucketing for dev set
-        dv_set = Dataset(path, dev_split, tokenizer, 1, wave_to_feat=wave_to_feat)
+        dv_set = Dataset(path, dev_split, tokenizer, 1, wave_to_feat=wave_to_feat, in_memory=in_memory)
         tr_set = Dataset(path, train_split, tokenizer,
-                         bucket_size, ascending=ascending, wave_to_feat=wave_to_feat)
+                         bucket_size, ascending=ascending, wave_to_feat=wave_to_feat, in_memory=in_memory)
         # Messages to show
         msg_list = _data_msg(name, path, train_split.__str__(), tr_set,
                              dev_split.__str__(), dv_set, batch_size, bucketing)
@@ -102,9 +102,9 @@ def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
         # Testing model
         mode = 'test'
         # Do not use bucketing for dev set
-        dv_set = Dataset(path, dev_split, tokenizer, 1, wave_to_feat=wave_to_feat)
+        dv_set = Dataset(path, dev_split, tokenizer, 1, wave_to_feat=wave_to_feat, in_memory=in_memory)
         # Do not use bucketing for test set
-        tt_set = Dataset(path, test_split, tokenizer, 1, wave_to_feat=wave_to_feat)
+        tt_set = Dataset(path, test_split, tokenizer, 1, wave_to_feat=wave_to_feat, in_memory=in_memory)
         # Messages to show
         msg_list = _data_msg(name, path, dev_split.__str__(), len(dv_set),
                              test_split.__str__(), len(tt_set), batch_size, False)
@@ -145,7 +145,8 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, ta
     # Text tokenizer
     tokenizer = load_text_encoder(**text)
     #Whether to extract feature in advance or not
-    in_memory = corpus.pop('in_memory') if corpus.get('in_memory') else False
+    in_memory = corpus.pop('in_memory') if corpus.get('in_memory') is not None else False
+    corpus['in_memory'] = in_memory
     wave_to_feat = audio_converter.wave_to_feat if in_memory else None
     collate_fn_wave_to_feat = (lambda x: x) if in_memory else audio_converter.wave_to_feat
     # Dataset (in testing mode, tr_set=dv_set, dv_set=tt_set)
