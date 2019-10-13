@@ -4,17 +4,19 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from src.solver import BaseSolver
 
 from src.asr import ASR
 from src.tts import FeedForwardTTS, HighwayTTS, Tacotron, Tacotron2
+from src.id_net import RNNSimple
 from src.optim import Optimizer
 from src.data import load_dataset
 from src.module import RNNLayer
 from src.util import human_format, cal_er, feat_to_fig, freq_loss, \
-    get_mask_from_sequence_lengths, get_grad_norm
+    get_mask_from_sequence_lengths, get_grad_norm, roc_score
 
-DEV_N_EXAMPLES = 16  # How many examples to show in tensorboard
+DEV_N_EXAMPLES = 0  # How many examples to show in tensorboard
 CKPT_STEP = 10000
 
 
@@ -24,7 +26,7 @@ class Solver(BaseSolver):
     def __init__(self, config, paras, mode):
         super().__init__(config, paras, mode)
         # Logger settings
-        self.best_wer = {'att': 3.0, 'ctc': 3.0}
+        self.best_eer = 3.0
         self.best_tts_loss = float('inf')
         # Curriculum learning affects data loader
         self.curriculum = self.config['hparas']['curriculum']
@@ -32,7 +34,7 @@ class Solver(BaseSolver):
     def fetch_data(self, data):
         ''' Move data to device and compute text seq. length'''
         _, feat, feat_len, txt, spkr_id = data
-        if hasattr(self.tts, 'n_frames_per_step'):
+        if self.tts is not None and hasattr(self.tts, 'n_frames_per_step'):
             bs, timesteps, _ = feat.size()
             padded_timesteps = timesteps + self.tts.n_frames_per_step - \
                 (timesteps % self.tts.n_frames_per_step)
@@ -43,14 +45,15 @@ class Solver(BaseSolver):
         feat_len = feat_len.to(self.device)
         txt = txt.to(self.device)
         txt_len = torch.sum(txt != 0, dim=-1)
+        spkr_id = spkr_id.to(self.device)
 
-        return feat, feat_len, txt, txt_len
+        return feat, feat_len, txt, txt_len, spkr_id
 
     def load_data(self):
         ''' Load data for training/validation, store tokenizer and input/output shape'''
-        self.tr_set, self.dv_set, self.tokenizer, self.audio_converter, msg, _ = \
+        self.tr_set, self.dv_set, self.tokenizer, self.audio_converter, msg, self.spkr_num = \
             load_dataset(self.paras.njobs, self.paras.gpu, self.paras.pin_memory,
-                         self.curriculum > 0, **self.config['data'], task='tts')
+                         self.curriculum > 0, **self.config['data'])
         self.vocab_size = self.tokenizer.vocab_size
         self.feat_dim, _ = self.audio_converter.feat_dim                  # ignore linear dim
         self.verbose(msg)
@@ -86,12 +89,23 @@ class Solver(BaseSolver):
             self.tts = Tacotron2(self.feat_dim,
                                  tts_in_dim, self.config['tts']).to(self.device)
         else:
-            raise NotImplementedError
+            self.tts = None
+
+        id_in_dim = tts_in_dim if self.tts is None else self.feat_dim
+        self.id_net = RNNSimple(
+            id_in_dim, self.spkr_num, **self.config['id_net']).to(self.device)
 
         self.verbose(self.asr.create_msg())
         # self.verbose(self.tts.create_msg())
-        model_paras = [{'params': self.asr.parameters()},
-                       {'params': self.tts.parameters()}]
+        if self.tts is None:
+            model_paras = [{'params': self.asr.parameters()},
+                           {'params': self.id_net.parameters()}]
+        else:
+            model_paras = [{'params': self.asr.parameters()},
+                           {'params': self.tts.parameters()},
+                           {'params': self.id_net.parameters()}]
+            for param in self.tts.parameters():
+                param.requires_grad = False
         for param in self.asr.parameters():
             param.requires_grad = False
 
@@ -104,6 +118,7 @@ class Solver(BaseSolver):
             differential_loss=self.config['hparas']['differential_loss'],
             emphasize_linear_low=self.config['hparas']['emphasize_linear_low']
         )
+
         # Optimizer
         self.optimizer = Optimizer(model_paras, **self.config['hparas'])
         self.verbose(self.optimizer.create_msg())
@@ -125,9 +140,9 @@ class Solver(BaseSolver):
 
         if self.GRAD_CLIP < float('inf'):
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.tts.parameters(), self.GRAD_CLIP)
+                self.id_net.parameters(), self.GRAD_CLIP)
         else:
-            grad_norm = get_grad_norm(self.tts.parameters())
+            grad_norm = get_grad_norm(self.id_net.parameters())
 
         if math.isnan(grad_norm):
             self.verbose('Error : grad norm is NaN @ step '+str(self.step))
@@ -142,16 +157,15 @@ class Solver(BaseSolver):
             # Load weights
             ckpt = torch.load(
                 self.paras.load, map_location=self.device if self.mode == 'train' else 'cpu')
-            # New: ckpt['asr'], Old: ckpt['model']
             self.asr.load_state_dict(ckpt['model'])
-            if self.emb_decoder is not None:
-                self.emb_decoder.load_state_dict(ckpt['emb_decoder'])
+            if self.tts is not None:
+                self.tts.load_state_dict(ckpt['tts'])
             # if self.amp:
             #    amp.load_state_dict(ckpt['amp'])
             # Load task-dependent items
             if self.mode == 'train':
                 if cont:
-                    self.tts.load_state_dict(ckpt['tts'])
+                    self.id_net.load_state_dict(ckpt['id_net'])
                     self.step = ckpt['global_step']
                     self.optimizer.load_opt_state_dict(ckpt['optimizer'])
                     self.verbose('Load ckpt from {}, restarting at step {}'.format(
@@ -176,7 +190,7 @@ class Solver(BaseSolver):
         ckpt_path = os.path.join(self.ckpdir, f_name)
         full_dict = {
             "asr": self.asr.state_dict(),
-            "tts": self.tts.state_dict(),
+            "id_net": self.id_net.state_dict(),
             "optimizer": self.optimizer.get_opt_state_dict(),
             "global_step": self.step,
             metric: score
@@ -184,36 +198,37 @@ class Solver(BaseSolver):
         # Additional modules to save
         # if self.amp:
         #    full_dict['amp'] = self.amp_lib.state_dict()
-        if self.emb_decoder is not None:
-            full_dict['emb_decoder'] = self.emb_decoder.state_dict()
+        if self.tts is not None:
+            full_dict['tts'] = self.tts.state_dict()
 
         torch.save(full_dict, ckpt_path)
         self.verbose("Saved checkpoint (step = {}, {} = {:.2f}) and status @ {}".
                      format(human_format(self.step), metric, score, ckpt_path))
 
     def exec(self):
-        ''' Training End-to-end ASR system '''
+        ''' Training identification neural network '''
         self.verbose('Total training steps {}.'.format(
             human_format(self.max_step)))
-        ctc_loss, att_loss, emb_loss = None, None, None
+        #acc_loss, att_loss, emb_loss = None, None, None
         n_epochs = 0
         self.timer.set()
+        loss_history = []
 
         while self.step < self.max_step:
             # Renew dataloader to enable random sampling
             if self.curriculum > 0 and n_epochs == self.curriculum:
                 self.verbose(
                     'Curriculum learning ends after {} epochs, starting random sampling.'.format(n_epochs))
-                self.tr_set, _, _, _, _, _ = \
+                self.tr_set, _, _, _, _, _, _ = \
                     load_dataset(self.paras.njobs, self.paras.gpu, self.paras.pin_memory,
-                                 False, **self.config['data'], task='tts')
+                                 False, **self.config['data'])
             for data in self.tr_set:
                 # Pre-step : update tf_rate/lr_rate and do zero_grad
                 tf_rate = self.optimizer.pre_step(self.step)
                 total_loss = 0
 
                 # Fetch data
-                feat, feat_len, txt, txt_len = self.fetch_data(data)
+                feat, feat_len, txt, txt_len, spkr_id = self.fetch_data(data)
                 self.timer.cnt('rd')
 
                 # Forward model
@@ -222,18 +237,32 @@ class Solver(BaseSolver):
                     deltas = self.asr.apply_delta_acceleration(feat)
                     hidden_outs, hidden_len, _ = self.asr.encoder.get_hidden_states(
                         deltas, feat_len, self.layer_num)
+                    if self.tts is not None:
+                        feat_pred, _, _ = self.tts(
+                            hidden_outs, hidden_len, feat, tf_rate=tf_rate)
+                        feat_pred_len = feat_pred.size(-2)
+                        if not isinstance(self.tts, Tacotron2):
+                            feat_pred = feat_pred.unsqueeze(1)
+                        mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len).unsqueeze(
+                            1).unsqueeze(-1).expand_as(feat_pred).bool()
+                        feat_pred = feat_pred.masked_fill(~mask, 0.0)
+                        if self.step == 1:
+                            tts_loss = self.freq_loss(
+                                feat_pred, feat[..., :feat_pred_len, :])
 
-                feat_pred, _, _ = self.tts(
-                    hidden_outs, hidden_len, feat, tf_rate=tf_rate)
-                feat_pred_len = feat_pred.size(-2)
-                if not isinstance(self.tts, Tacotron2):
-                    feat_pred = feat_pred.unsqueeze(1)
-                mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len)\
-                    .unsqueeze(1).unsqueeze(-1).expand_as(feat_pred).bool()
-                feat_pred = feat_pred.masked_fill(~mask, 0.0)
-                tts_loss = self.freq_loss(
-                    feat_pred, feat[..., :feat_pred_len, :])
-                total_loss = tts_loss
+                id_in_feat = hidden_outs if self.tts is None else feat_pred
+                spkr_embedding, spkr_pred = self.id_net(id_in_feat, hidden_len)
+                if self.id_net.loss_fn == 'amsoftmax':
+                    margin = 0.35
+                    scale = 30
+                    spkr_pred[np.arange(len(spkr_id)), spkr_id] -= margin
+                    spkr_pred *= scale
+                total_loss = F.cross_entropy(spkr_pred, spkr_id)
+                loss_history.append(total_loss.cpu().item())
+
+                print(spkr_embedding[-1][-5:])
+                print(spkr_id[-1])
+                print(spkr_pred[-1][spkr_id[-1]])
 
                 self.timer.cnt('fw')
 
@@ -243,13 +272,18 @@ class Solver(BaseSolver):
 
                 # Logger
                 if (self.step == 1) or (self.step % self.PROGRESS_STEP == 0):
-                    self.progress('Tr stat | Loss - {:.2f} | Grad. Norm - {:.2f} | {}'
-                                  .format(total_loss.cpu().item(), grad_norm, self.timer.show()))
-                    self.write_log('loss', {'tr_tts': tts_loss})
+                    loss = sum(loss_history)/len(loss_history)
+                    loss_history.clear()
+                    self.progress('Tr stat | Loss - {:.2f} | Grad. Norm - {:.4f} | {}'
+                                  .format(loss, grad_norm, self.timer.show()))
+                    self.write_log('loss', {'tr_id': loss})
+                    # self.progress('Tr stat | Loss - {:.2f} | Grad. Norm - {:.4f} | {}'
+                    #              .format(total_loss.cpu().item(), grad_norm, self.timer.show()))
+                    #self.write_log('loss', {'tr_id': total_loss})
 
                 # Validation
-                if (self.step == 1) or (self.step % self.valid_step == 0):
-                    self.validate()
+                # if (self.step == 1) or (self.step % self.valid_step == 0):
+                #    self.validate()
 
                 # End of step
                 # https://github.com/pytorch/pytorch/issues/13246#issuecomment-529185354
@@ -263,92 +297,102 @@ class Solver(BaseSolver):
     def validate(self):
         # Eval mode
         self.asr.eval()
-        self.tts.eval()
-        dev_tts_loss = []
-        att_output = None
-        ctc_output = None
+        self.id_net.eval()
+        if self.tts is not None:
+            self.tts.eval()
 
+        dev_spkr_emb, dev_spkr_id = [], []
         for i, data in enumerate(self.dv_set):
             self.progress('Valid step - {}/{}'.format(i+1, len(self.dv_set)))
             # Fetch data
-            feat, feat_len, txt, txt_len = self.fetch_data(data)
+            feat, feat_len, txt, txt_len, spkr_id = self.fetch_data(data)
+            dev_spkr_id += spkr_id.cpu().tolist()
 
             # Forward model
             with torch.no_grad():
                 deltas = self.asr.apply_delta_acceleration(feat)
                 hidden_outs, hidden_len, _ = self.asr.encoder.get_hidden_states(
                     deltas, feat_len, self.layer_num)
-                feat_pred, align, _ = self.tts(
-                    hidden_outs, hidden_len, feat.size(1), tf_rate=0.0)
-                feat_pred_len = feat_pred.size(-2)
-                if not isinstance(self.tts, Tacotron2):
-                    feat_pred = feat_pred.unsqueeze(1)
-                mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len)\
-                    .unsqueeze(1).unsqueeze(-1).expand_as(feat_pred).bool()
-                feat_pred = feat_pred.masked_fill(~mask, 0.0)
-                if self.step == 1:
+                if self.tts is not None:
+                    feat_pred, align, _ = self.tts(
+                        hidden_outs, hidden_len, feat.size(1), tf_rate=0.0)
+                    feat_pred_len = feat_pred.size(-2)
+                    if not isinstance(self.tts, Tacotron2):
+                        feat_pred = feat_pred.unsqueeze(1)
+                    mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len)\
+                        .unsqueeze(1).unsqueeze(-1).expand_as(feat_pred).bool()
+                    feat_pred = feat_pred.masked_fill(~mask, 0.0)
+
+                id_in_feat = hidden_outs if self.tts is None else feat_pred
+                spkr_embedding, _ = self.id_net(id_in_feat)
+                dev_spkr_emb += spkr_embedding.cpu().tolist()
+
+                if self.step == 1 and i == len(self.dv_set)//2:
                     # TODO(Chung-I): unnecessary second forwarding, need to change
-                    ctc_output, encode_len, att_output, att_align, dec_state = \
-                        self.asr(feat, feat_len, int(max(txt_len)*self.DEV_STEP_RATIO),
-                                 emb_decoder=self.emb_decoder)
+                    ctc_output, encode_len, att_output, att_align, dec_state = self.asr(
+                        feat, feat_len, int(max(txt_len)*self.DEV_STEP_RATIO), emb_decoder=self.emb_decoder)
 
-                tts_loss = self.freq_loss(
-                    feat_pred, feat[..., :feat_pred_len, :])
+                    # Show some example on tensorboard
+                    # pick n longest samples in the median batch
+                    sample_txt = txt.cpu()[:DEV_N_EXAMPLES]
+                    sample_mel = feat.cpu()[:DEV_N_EXAMPLES]
+                    if ctc_output is not None:
+                        ctc_hyps = ctc_output.argmax(
+                            dim=-1).cpu()[:DEV_N_EXAMPLES]
+                    else:
+                        ctc_hyps = [None] * DEV_N_EXAMPLES
+                    if att_output is not None:
+                        att_hyps = att_output.argmax(
+                            dim=-1).cpu()[:DEV_N_EXAMPLES]
 
-            dev_tts_loss.append(tts_loss)
+                    for i, (mel, gt_txt, h_p) in enumerate(zip(sample_mel, sample_txt, ctc_hyps)):
+                        if h_p is not None:
+                            self.write_log('hyp_text{}'.format(i), self.tokenizer.decode(
+                                h_p.tolist(), ignore_repeat=True))
+                        self.write_log('truth_text{}'.format(
+                            i), self.tokenizer.decode(gt_txt.tolist()))
+                        self.write_log(
+                            'mel_spec{}_gt'.format(i), feat_to_fig(mel))
+                        self.write_log('mel_wave{}_gt'.format(
+                            i), self.audio_converter.feat_to_wave(mel))
 
-            # Show some example on tensorboard
-            if i == len(self.dv_set)//2:
-                # pick n longest samples in the median batch
-                sample_txt = txt.cpu()[:DEV_N_EXAMPLES]
-                if ctc_output is not None:
-                    ctc_hyps = ctc_output.argmax(dim=-1).cpu()[:DEV_N_EXAMPLES]
-                else:
-                    ctc_hyps = [None] * DEV_N_EXAMPLES
-                if att_output is not None:
-                    att_hyps = att_output.argmax(dim=-1).cpu()[:DEV_N_EXAMPLES]
-                channel = 1 if isinstance(self.tts, Tacotron2) else 0
-                # PostNet product
-                mel_p = feat_pred.cpu()[:DEV_N_EXAMPLES, channel]
-                if align is None:
-                    align_p = [None] * DEV_N_EXAMPLES
-                else:
-                    align_p = align.cpu()[:DEV_N_EXAMPLES]
-                sample_mel = feat.cpu()[:DEV_N_EXAMPLES]
+                    # Show tts example
+                    if self.tts is not None:
+                        tts_loss = self.freq_loss(
+                            feat_pred, feat[..., :feat_pred_len, :])
+                        channel = 1 if isinstance(
+                            self.tts, Tacotron2) else 0
+                        # PostNet product
+                        mel_p = feat_pred.cpu()[:DEV_N_EXAMPLES, channel]
+                        if align is None:
+                            align_p = [None] * DEV_N_EXAMPLES
+                        else:
+                            align_p = align.cpu()[:DEV_N_EXAMPLES]
 
-        for i, (m_p, a_p) in enumerate(zip(mel_p, align_p)):
-            self.write_log('mel_spec{}'.format(i), feat_to_fig(m_p))
-            self.write_log('mel_wave{}'.format(
-                i), self.audio_converter.feat_to_wave(m_p))
-            if a_p is not None:
-                self.write_log('dv_align{}'.format(i), feat_to_fig(a_p))
+                        for i, (m_p, a_p) in enumerate(zip(mel_p, align_p)):
+                            self.write_log(
+                                'mel_spec{}'.format(i), feat_to_fig(m_p))
+                            self.write_log('mel_wave{}'.format(
+                                i), self.audio_converter.feat_to_wave(m_p))
+                            if a_p is not None:
+                                self.write_log(
+                                    'dv_align{}'.format(i), feat_to_fig(a_p))
 
-        if self.step == 1:
-            for i, (mel, gt_txt, h_p) in enumerate(zip(sample_mel, sample_txt, ctc_hyps)):
-                if h_p is not None:
-                    self.write_log('hyp_text{}'.format(i), self.tokenizer.decode(
-                        h_p.tolist(), ignore_repeat=True))
-                self.write_log('truth_text{}'.format(
-                    i), self.tokenizer.decode(gt_txt.tolist()))
-                self.write_log('mel_spec{}_gt'.format(i), feat_to_fig(mel))
-                self.write_log('mel_wave{}_gt'.format(
-                    i), self.audio_converter.feat_to_wave(mel))
+        assert len(dev_spkr_emb) == len(dev_spkr_id)
+        eer, dcf2, dcf3 = roc_score(dev_spkr_emb, dev_spkr_id)
 
-        # Ckpt if performance improves
-        dev_tts_loss = sum(dev_tts_loss)/len(dev_tts_loss)
-
-        if dev_tts_loss < self.best_tts_loss:
-            self.best_tts_loss = dev_tts_loss
+        if eer < self.best_eer:
+            self.best_eer = eer
             if self.step > 1:
-                self.save_checkpoint('tts_{}.pth'.format(
-                    self.step), 'tts_loss', dev_tts_loss)
+                self.save_checkpoint('id_net_{}.pth'.format(
+                    self.step), 'spkr_eer', eer)
 
         if ((self.step > 1) and (self.step % CKPT_STEP == 0)):
             # Regular ckpt
             self.save_checkpoint('step_{}.pth'.format(
-                self.step), 'tts_loss', dev_tts_loss)
+                self.step), 'spkr_eer', eer)
 
-        self.write_log('speech_loss', {'dev': dev_tts_loss})
+        self.write_log('ROC', {'EER': eer, 'DCF2': dcf2, 'DCF3': dcf3})
 
         # Resume training
-        self.tts.train()
+        self.id_net.train()
