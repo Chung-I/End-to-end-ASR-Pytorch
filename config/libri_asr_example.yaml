@@ -53,25 +53,11 @@ model:                                    # Model architecture
   delta: 2
   encoder:
     cnn:
-<<<<<<< HEAD
-      type: 'vgg'
-      nonlinearity: 'relu'
-      batch_norm:
-        type: '1d'
-        momentum: 0.99
-||||||| merged common ancestors
-      type: 'vgg'
-      nonlinearity: 'relu'
-      # batch_norm:
-      #   type: '1d'
-      #   momentum: 0.99
-=======
       type: 'none'
       # nonlinearity: 'relu'
       # batch_norm:
       #   type: '1d'
       #   momentum: 0.99
->>>>>>> icassp
       # num_layers: 2
       # hidden_channel: 32
       # nonlinearity: relu

@@ -44,6 +44,7 @@ class LibriDataset(Dataset):
         # Process wavefiles to features
         self.features = None
         self.aug_features = None
+        self.waves = None
         list_of_features = []
         list_of_feat_lens = []
         list_of_aug_features = []
@@ -56,7 +57,7 @@ class LibriDataset(Dataset):
         elif in_memory == 'wave':
             for s in split:
                 file_list += list(Path(join(path, s)).rglob("*.flac"))
-            file_list, _ = zip(*mp_progress_map(torchaudio.load, ((f,) for f in file_list), READ_FILE_THREADS))
+            self.waves, _ = zip(*mp_progress_map(torchaudio.load, ((f,) for f in file_list), READ_FILE_THREADS))
         elif in_memory == True or in_memory == 'mmap':
             pt_path_to_np_array = lambda path: torch.load(path).numpy()
             mmap_mode = 'r' if in_memory == 'mmap' else None
@@ -133,7 +134,10 @@ class LibriDataset(Dataset):
         if self.aug_features is not None:
             aug_feat_intvls = [(aug_feat_ptr[idx], aug_feat_ptr[idx+1]) for idx in indices]
 
-        if self.features is None:
+        if self.waves is not None:
+            self.waves = [self.waves[idx] for idx in indices]
+            self.get_feat = lambda idx: self.waves[idx]
+        elif self.features is None:
             self.get_feat = lambda idx: self.file_list[idx]
         elif self.aug_features is None:
             self.get_feat = lambda idx: (self.features[feat_intvls[idx][0]:feat_intvls[idx][1]],)
