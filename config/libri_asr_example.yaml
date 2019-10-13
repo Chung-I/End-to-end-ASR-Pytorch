@@ -6,7 +6,7 @@ data:
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 
     batch_size: 12
-    in_memory: True
+    in_memory: 'mmap'
   audio:
     num_freq: 1025
     num_mels: 80
@@ -37,10 +37,11 @@ hparas:                                   # Experiment hyper-parameters
   tf_end: 0.0
   tf_step: 500000
   grad_clip: 5.0
-  optimizer: 'SGD'
-  nesterov: True
-  momentum: 0.9
-  lr: 0.01
+  optimizer:
+    type: 'Adam'
+    lr: 0.0003
+  # nesterov: True
+  # momentum: 0.9
   lr_scheduler:
     type: 'reduce_lr_on_plateau'                   # 'fixed'/'warmup'/'decay'/'reduce_lr_on_plateau'
     factor: 0.5
@@ -52,11 +53,11 @@ model:                                    # Model architecture
   delta: 2
   encoder:
     cnn:
-      type: 'vgg'
-      nonlinearity: 'relu'
-      batch_norm:
-        type: '1d'
-        momentum: 0.99
+      type: 'none'
+      # nonlinearity: 'relu'
+      # batch_norm:
+      #   type: '1d'
+      #   momentum: 0.99
       # num_layers: 2
       # hidden_channel: 32
       # nonlinearity: relu
@@ -66,7 +67,7 @@ model:                                    # Model architecture
     dropout: [0,0,0,0,0]
     layer_norm: [False,False,False,False,False]
     proj: [True,True,True,True,True]      # Linear projection + Tanh after each rnn layer
-    sample_rate: [1,1,1,1,1]
+    sample_rate: [1,2,2,1,1]
     sample_style: 'concat'                  # 'drop'/'concat'
   attention:
     mode: 'loc'                           # 'dot'/'loc'
