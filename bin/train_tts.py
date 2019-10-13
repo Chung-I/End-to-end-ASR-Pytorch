@@ -14,7 +14,7 @@ from src.module import RNNLayer
 from src.util import human_format, cal_er, feat_to_fig, freq_loss, \
     get_mask_from_sequence_lengths, get_grad_norm
 
-DEV_N_EXAMPLES = 8  # How many examples to show in tensorboard
+DEV_N_EXAMPLES = 16  # How many examples to show in tensorboard
 CKPT_STEP = 10000
 
 
@@ -48,7 +48,7 @@ class Solver(BaseSolver):
 
     def load_data(self):
         ''' Load data for training/validation, store tokenizer and input/output shape'''
-        self.tr_set, self.dv_set, self.tokenizer, self.audio_converter, msg = \
+        self.tr_set, self.dv_set, self.tokenizer, self.audio_converter, msg, _ = \
             load_dataset(self.paras.njobs, self.paras.gpu, self.paras.pin_memory,
                          self.curriculum > 0, **self.config['data'], task='tts')
         self.vocab_size = self.tokenizer.vocab_size
