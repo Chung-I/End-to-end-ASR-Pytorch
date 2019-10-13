@@ -37,7 +37,7 @@ def collect_audio_batch(batch, audio_transform, mode, task):
                 audio_feat.append(f)
                 audio_len.append(len(f))
                 text.append(torch.LongTensor(b[1]))
-                spkr_id.append(torch.tensor(b[2]))
+                spkr_id.append(b[2])
                 # Testing without augmented data
                 if task == 'asr' and mode == 'test':
                     break
@@ -49,6 +49,7 @@ def collect_audio_batch(batch, audio_transform, mode, task):
     audio_feat = pad_sequence(audio_feat, batch_first=True)
     text = pad_sequence(text, batch_first=True)
     audio_len = torch.LongTensor(audio_len)
+    spkr_id = torch.tensor(spkr_id)
 
     return file, audio_feat, audio_len, text, spkr_id
 
@@ -152,6 +153,7 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, ta
     # Dataset (in testing mode, tr_set=dv_set, dv_set=tt_set)
     tr_set, dv_set, tr_loader_bs, dv_loader_bs, mode, data_msg = create_dataset(
         tokenizer, ascending, **corpus, wave_to_feat=wave_to_feat)
+    spkr_num = tr_set.spkr_num
     # Collect function
     collect_tr = partial(
         collect_audio_batch, audio_transform=collate_fn_wave_to_feat, mode=mode, task=task)
@@ -169,7 +171,7 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, ta
     data_msg.append('I/O spec.  | Audio feature = {}\t| feature dim = {}\t| Token type = {}\t| Vocab size = {}'
                     .format(audio_converter.feat_type, audio_converter.feat_dim, tokenizer.token_type, tokenizer.vocab_size))
 
-    return tr_set, dv_set, tokenizer, audio_converter, data_msg
+    return tr_set, dv_set, tokenizer, audio_converter, data_msg, spkr_num
 
 
 def load_textset(n_jobs, use_gpu, pin_memory, corpus, text):

@@ -1,7 +1,7 @@
 from typing import Callable
 from pathlib import Path
 import os
-
+import matplotlib.pyplot as plt
 import math
 import time
 from tqdm import tqdm
@@ -10,16 +10,19 @@ import multiprocessing as mp
 from numpy.lib.format import open_memmap
 import torch
 import numpy as np
+from numpy.linalg import norm
 from torch import nn
 from torch._six import inf
 import editdistance as ed
+from sklearn.metrics import roc_curve, auc, roc_auc_score
 
 import matplotlib
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+
 
 class Timer():
     ''' Timer for recording training time distribution. '''
+
     def __init__(self):
         self.prev_t = time.time()
         self.clear()
@@ -27,10 +30,10 @@ class Timer():
     def set(self):
         self.prev_t = time.time()
 
-    def cnt(self,mode):
+    def cnt(self, mode):
         self.time_table[mode] += time.time()-self.prev_t
         self.set()
-        if mode =='bw':
+        if mode == 'bw':
             self.click += 1
 
     def show(self):
@@ -39,15 +42,18 @@ class Timer():
         self.time_table['rd'] = 100*self.time_table['rd']/total_time
         self.time_table['fw'] = 100*self.time_table['fw']/total_time
         self.time_table['bw'] = 100*self.time_table['bw']/total_time
-        msg  = '{avg:.3f} sec/step (rd {rd:.1f}% | fw {fw:.1f}% | bw {bw:.1f}%)'.format(**self.time_table)
+        msg = '{avg:.3f} sec/step (rd {rd:.1f}% | fw {fw:.1f}% | bw {bw:.1f}%)'.format(
+            **self.time_table)
         self.clear()
         return msg
 
     def clear(self):
-        self.time_table = {'rd':0,'fw':0,'bw':0}
+        self.time_table = {'rd': 0, 'fw': 0, 'bw': 0}
         self.click = 0
 
 # Reference : https://github.com/espnet/espnet/blob/master/espnet/nets/pytorch_backend/e2e_asr.py#L168
+
+
 def init_weights(module):
     # Exceptions
     if type(module) == nn.Embedding:
@@ -63,7 +69,7 @@ def init_weights(module):
                 n = data.size(1)
                 stdv = 1. / math.sqrt(n)
                 data.normal_(0, stdv)
-            elif data.dim() in [3,4]:
+            elif data.dim() in [3, 4]:
                 # conv weight
                 n = data.size(1)
                 for k in data.size()[2:]:
@@ -72,6 +78,8 @@ def init_weights(module):
                 data.normal_(0, stdv)
             else:
                 raise NotImplementedError
+
+
 def init_gate(bias):
     n = bias.size(0)
     start, end = n // 4, n // 2
@@ -79,26 +87,31 @@ def init_gate(bias):
     return bias
 
 # Convert Tensor to Figure on tensorboard
+
+
 def feat_to_fig(feat):
     # feat TxD tensor
     feat = feat.transpose(1, 0)
     data = _save_canvas(feat.numpy())
-    return torch.FloatTensor(data),"HWC"
+    return torch.FloatTensor(data), "HWC"
+
 
 def _save_canvas(data, meta=None):
     fig, ax = plt.subplots(figsize=(16, 8))
     if meta is None:
         ax.imshow(data, aspect="auto", origin="lower")
     else:
-        ax.bar(meta[0],data[0],tick_label=meta[1],fc=(0, 0, 1, 0.5))
-        ax.bar(meta[0],data[1],tick_label=meta[1],fc=(1, 0, 0, 0.5))
+        ax.bar(meta[0], data[0], tick_label=meta[1], fc=(0, 0, 1, 0.5))
+        ax.bar(meta[0], data[1], tick_label=meta[1], fc=(1, 0, 0, 0.5))
     fig.canvas.draw()
     # Note : torch tb add_image takes color as [0,1]
-    data = np.array(fig.canvas.renderer._renderer)[:,:,:-1]/255.0 
+    data = np.array(fig.canvas.renderer._renderer)[:, :, :-1]/255.0
     plt.close(fig)
     return data
 
 # Reference : https://stackoverflow.com/questions/579310/formatting-long-numbers-as-strings-in-python
+
+
 def human_format(num):
     magnitude = 0
     while num >= 1000:
@@ -107,26 +120,28 @@ def human_format(num):
     # add more suffixes if you need them
     return '{:3.1f}{}'.format(num, [' ', 'K', 'M', 'G', 'T', 'P'][magnitude])
 
+
 def cal_er(tokenizer, pred, truth, mode='wer', ctc=False):
     # Calculate error rate of a batch
     if pred is None:
         return np.nan
-    elif len(pred.shape)>=3:
+    elif len(pred.shape) >= 3:
         pred = pred.argmax(dim=-1)
     er = []
-    for p,t in zip(pred,truth):
+    for p, t in zip(pred, truth):
         p = tokenizer.decode(p.tolist(), ignore_repeat=ctc)
         t = tokenizer.decode(t.tolist())
         if mode == 'wer':
             p = p.split(' ')
             t = t.split(' ')
-        er.append(float(ed.eval(p,t))/len(t))
+        er.append(float(ed.eval(p, t))/len(t))
     return sum(er)/len(er)
 
 
 def load_embedding(text_encoder, embedding_filepath):
     with open(embedding_filepath, "r") as f:
-        vocab_size, embedding_size = [int(x) for x in f.readline().strip().split()]
+        vocab_size, embedding_size = [int(x)
+                                      for x in f.readline().strip().split()]
         embeddings = np.zeros((text_encoder.vocab_size, embedding_size))
 
         unk_count = 0
@@ -145,16 +160,19 @@ def load_embedding(text_encoder, embedding_filepath):
 
             if idx == text_encoder.unk_idx:
                 unk_count += 1
-                embeddings[idx] += np.asarray([float(x) for x in emb.split(" ")])
+                embeddings[idx] += np.asarray([float(x)
+                                               for x in emb.split(" ")])
             else:
                 # Suppose there is only one (w, v) pair in embedding file
-                embeddings[idx] = np.asarray([float(x) for x in emb.split(" ")])
+                embeddings[idx] = np.asarray(
+                    [float(x) for x in emb.split(" ")])
 
         # Average <unk> vector
         if unk_count != 0:
             embeddings[text_encoder.unk_idx] /= unk_count
 
         return embeddings
+
 
 def freq_loss(pred, label, sample_rate, n_mels, loss, differential_loss, emphasize_linear_low, p=1):
     """
@@ -164,11 +182,11 @@ def freq_loss(pred, label, sample_rate, n_mels, loss, differential_loss, emphasi
         loss: `l1` or `mse`
         differential_loss: use differential loss or not, see here `https://arxiv.org/abs/1909.10302`
         emphasize_linear_low: emphasize the low-freq. part of linear spectrogram or not
-        
+
     Return:
         loss
-    """    
-    # ToDo : Tao 
+    """
+    # ToDo : Tao
     # pred -> BxTxD predicted mel-spec or linear-spec
     # label-> same shape
     # return loss for loss.backward()
@@ -183,7 +201,7 @@ def freq_loss(pred, label, sample_rate, n_mels, loss, differential_loss, emphasi
 
     # Repeat for postnet
     _, chn, _, dim = pred.shape
-    label = label.unsqueeze(1).repeat(1,chn,1,1)
+    label = label.unsqueeze(1).repeat(1, chn, 1, 1)
 
     loss_all = criterion(p * pred, p * label)
 
@@ -295,3 +313,28 @@ def write_sliced_array(sequence, out_path, total_len,
     print('flushing...')
     data.flush()
     print('done.')
+
+
+def roc_score(spkr_emb, spkr_id):
+    score_matrix, label_matrix, true_match, false_match = [], [], [], []
+    for i in range(len(spkr_id)):
+        for j in range(i):
+            #score = np.dot(embeddings[i, :], embeddings[j, :])
+            a = spkr_emb[i][:]
+            b = spkr_emb[j][:]
+            score = np.dot(a, b)/(norm(a)*norm(b))
+            score_matrix.append(score)
+            if (spkr_id[i] == spkr_id[j]):
+                label_matrix.append(1)
+                true_match.append(score)
+            else:
+                label_matrix.append(0)
+                false_match.append(score)
+    #print("There are %d positive and %d negative pairs" %(len(true_match), len(false_match)))
+
+    fpr, tpr, _ = roc_curve(label_matrix, score_matrix)
+    intersection = abs(1-tpr-fpr)
+    eer = fpr[np.argmin(intersection)]
+    dcf2 = np.min(100*(0.01*(1-tpr)+0.99*fpr))
+    dcf3 = np.min(1000*(0.001*(1-tpr)+0.999*fpr))
+    return eer, dcf2, dcf3
