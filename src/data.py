@@ -141,12 +141,13 @@ def create_textset(tokenizer, train_split, dev_split, name, path, bucketing, bat
 def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, task='asr'):
     ''' Prepare dataloader for training/validation'''
 
+    in_memory = corpus.pop('in_memory') if corpus.get('in_memory') is not None else False
+    audio['in_memory'] = in_memory
     # Audio feature extractor
     audio_converter = load_audio_transform(**audio)
     # Text tokenizer
     tokenizer = load_text_encoder(**text)
     #Whether to extract feature in advance or not
-    in_memory = corpus.pop('in_memory') if corpus.get('in_memory') is not None else False
     corpus['in_memory'] = in_memory
     wave_to_feat = audio_converter.wave_to_feat if in_memory else None
     collate_fn_wave_to_feat = (lambda x: x) if in_memory == 'mmap' or in_memory == True else audio_converter.wave_to_feat
