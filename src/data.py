@@ -33,7 +33,7 @@ def collect_audio_batch(batch, audio_transform, mode, task):
             feat = audio_transform(b[0])
             # feat may be (mel_sp) or (mel_sp, mel_sp_augmented)
             for f in feat:
-                file.append(str(b[0]).split('/')[-1].split('.')[0])
+                file.append(str(b[3]))
                 audio_feat.append(f)
                 audio_len.append(len(f))
                 text.append(torch.LongTensor(b[1]))

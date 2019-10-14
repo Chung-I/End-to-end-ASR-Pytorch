@@ -5,7 +5,7 @@ data:
     train_split: ['train-clean-100']      # Name of data splits to be used as training set
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 
-    batch_size: 12
+    batch_size: 24
     in_memory: False
   audio:
     num_freq: 1025
@@ -16,12 +16,6 @@ data:
     sample_rate: 16000
     use_linear: False                      ### Return Linear spectrogram
     # augmentation
-    noise:
-      path: 'save/musan'
-      genre:
-        music: [[5, 15], [1,1]]
-        noise: [[0, 15], [1,1]]
-        speech: [[13, 20], [3,7]]
     snr_range: [-1]
     time_stretch_range: [1.0, 1.0]
     inverse_prob: 0.0
@@ -29,23 +23,6 @@ data:
     mode: 'subword'                       # 'character'/'word'/'subword'
     vocab_file: 'tests/sample_data/subword.model'
 
-hparas:                                   # Experiment hyper-parameters
-  valid_step: 1000
-  curriculum: 0
-  max_step: 15001
-  tf_start: 1.0
-  tf_end: 1.0
-  tf_step: 500000
-  grad_clip: 'inf'
-  optimizer:
-    type: 'Adam'
-    lr: 0.001
-  lr_scheduler:
-    type: 'warmup'                   # 'fixed'/'warmup'/'decay'/'reduce_lr_on_plateau'
-  freq_loss_type: 'l1'                         # 'l1'/'mse'
-  differential_loss: False
-  emphasize_linear_low: False
-  
 model:                                    # Model architecture
   delta: 2
   ctc_weight: 1.0                         # Weight for CTC loss
@@ -74,30 +51,7 @@ model:                                    # Model architecture
     layer: 1
     dropout: 0
 tts:
-  # type: 'highway'
   layer_num: 9
   num_layers: 4
-    # encoder:
-    #   layer_num: 4
-    #   enc_embed_dim: 320
   type: 'highway'
-  #decoder:
-  #  n_frames_per_step: 5
-  #  prenet_dim: 128
-  #  prenet_dropout: 0.5
-  #  query_rnn_dim: 1024
-  #  dec_rnn_dim: 1024
-  #  query_dropout: 0.1
-  #  dec_dropout: 0.1
-  #  attn_dim: 256
-  #  n_location_filters: 32
-  #  location_kernel_size: 31
-  #  loc_aware: True
-  #  use_summed_weights: True
-  #  drop_dec_in: 0.0
-  #postnet:
-  #  postnet_embed_dim: 512
-  #  postnet_kernel_size: 5
-  #  postnet_n_conv: 5
-  #  postnet_dropout: 0.5
-src: 'dummy'
+src: 'dummy' # to be replaced by bash script

@@ -77,8 +77,12 @@ elif paras.prep:
     from bin.prep import Solver
     mode = 'train'
 elif paras.tts:
-    from bin.train_tts import Solver
-    mode = 'train'
+    if paras.test:
+        from bin.test_tts import Solver
+        mode = 'test'
+    else:
+        from bin.train_tts import Solver
+        mode = 'train'
 elif paras.id:
     from bin.train_id import Solver
     mode = 'train'

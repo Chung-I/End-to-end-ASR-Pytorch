@@ -15,7 +15,7 @@ from src.util import human_format, cal_er, feat_to_fig, freq_loss, \
     get_mask_from_sequence_lengths, get_grad_norm
 
 DEV_N_EXAMPLES = 16  # How many examples to show in tensorboard
-CKPT_STEP = 10000
+CKPT_STEP = 1000
 
 
 class Solver(BaseSolver):
@@ -340,8 +340,7 @@ class Solver(BaseSolver):
         if dev_tts_loss < self.best_tts_loss:
             self.best_tts_loss = dev_tts_loss
             if self.step > 1:
-                self.save_checkpoint('tts_{}.pth'.format(
-                    self.step), 'tts_loss', dev_tts_loss)
+                self.save_checkpoint('tts.pth', 'tts_loss', dev_tts_loss)
 
         if ((self.step > 1) and (self.step % CKPT_STEP == 0)):
             # Regular ckpt
