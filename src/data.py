@@ -23,8 +23,8 @@ def collect_audio_batch(batch, audio_transform, mode, task):
     first_feat = audio_transform(batch[0][0])
     first_len = first_feat[0].shape[0]
 
-    if first_len > HALF_BATCHSIZE_AUDIO_LEN and mode == 'train':
-        batch = batch[:len(batch)//2]
+    # if first_len > HALF_BATCHSIZE_AUDIO_LEN and mode == 'train':
+    #    batch = batch[:len(batch)//2]
 
     # Read batch
     file, audio_feat, audio_len, text, spkr_id = [], [], [], [], []
@@ -74,7 +74,7 @@ def collect_text_batch(batch, mode):
 
 def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
                    train_split=None, dev_split=None, test_split=None,
-                   wave_to_feat=None, in_memory=False):
+                   wave_to_feat=None, in_memory=False, preload=False):
     ''' Interface for creating all kinds of dataset'''
 
     # Recognize corpus
@@ -92,9 +92,9 @@ def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
             not ascending) else 1  # Ascending without bucketing
         # Do not use bucketing for dev set
         dv_set = Dataset(path, dev_split, tokenizer, 1,
-                         wave_to_feat=wave_to_feat, in_memory=in_memory)
-        tr_set = Dataset(path, train_split, tokenizer,
-                         bucket_size, ascending=ascending, wave_to_feat=wave_to_feat, in_memory=in_memory)
+                         wave_to_feat=wave_to_feat, in_memory=in_memory, preload=preload)
+        tr_set = Dataset(path, train_split, tokenizer, bucket_size, ascending=ascending,
+                         wave_to_feat=wave_to_feat, in_memory=in_memory, preload=preload)
         # Messages to show
         msg_list = _data_msg(name, path, train_split.__str__(), tr_set,
                              dev_split.__str__(), dv_set, batch_size, bucketing)
@@ -152,6 +152,9 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, ta
     # Text tokenizer
     tokenizer = load_text_encoder(**text)
     # Whether to extract feature in advance or not
+    preload = corpus.pop('preload') if corpus.get(
+        'preload') is not None else False
+    corpus['preload'] = preload
     corpus['in_memory'] = in_memory
     wave_to_feat = audio_converter.wave_to_feat if in_memory else None
     collate_fn_wave_to_feat = (

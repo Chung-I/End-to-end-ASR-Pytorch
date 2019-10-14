@@ -17,7 +17,15 @@ OFFICIAL_TXT_SRC = ['librispeech-lm-norm.txt']
 # Remove longest N sentence in librispeech-lm-norm.txt
 REMOVE_TOP_N_TXT = 5000000
 # Default num. of threads used for loading LibriSpeech
-READ_FILE_THREADS = 12
+READ_FILE_THREADS = 4
+
+
+def load_clone(wavfile):
+    from copy import deepcopy
+    waveform, _ = torchaudio.load(wavfile)
+    wave_clone = deepcopy(waveform)
+    del waveform
+    return wave_clone, _
 
 
 def read_text(file):
@@ -34,7 +42,7 @@ def read_text(file):
 
 
 class LibriDataset(Dataset):
-    def __init__(self, path, split, tokenizer, bucket_size, ascending=False, wave_to_feat=None, in_memory=False):
+    def __init__(self, path, split, tokenizer, bucket_size, ascending=False, wave_to_feat=None, in_memory=False, preload=False):
         # Setup
         self.path = path
         self.bucket_size = bucket_size
@@ -51,15 +59,17 @@ class LibriDataset(Dataset):
         list_of_aug_feat_lens = []
         file_list = []
 
-        if not in_memory:
+        if not in_memory or preload == 'onthefly':
             for s in split:
                 file_list += list(Path(join(path, s)).rglob("*.flac"))
-        elif in_memory == 'wave':
+        elif in_memory == 'wave' and (preload == 'preload' or preload == True):
             for s in split:
                 file_list += list(Path(join(path, s)).rglob("*.flac"))
-            self.waves, _ = zip(*mp_progress_map(torchaudio.load, ((f,)
-                                                                   for f in file_list), READ_FILE_THREADS))
-        elif in_memory == True or in_memory == 'mmap':
+            self.waves, _ = zip(*mp_progress_map(load_clone, ((f,)
+                                                              for f in file_list), READ_FILE_THREADS))
+            # self.waves, _ = zip(*mp_progress_map(torchaudio.load, ((f,)
+            #                                                       for f in file_list), READ_FILE_THREADS))
+        elif (in_memory == True or in_memory == 'mmap') and (preload == 'preload' or preload == True):
             def pt_path_to_np_array(path): return torch.load(path).numpy()
             mmap_mode = 'r' if in_memory == 'mmap' else None
             for s in split:
@@ -154,18 +164,32 @@ class LibriDataset(Dataset):
         if self.aug_features is not None:
             aug_feat_intvls = [(aug_feat_ptr[idx], aug_feat_ptr[idx+1])
                                for idx in indices]
-
         if self.waves is not None:
             self.waves = [self.waves[idx] for idx in indices]
-            self.get_feat = lambda idx: self.waves[idx]
+
+        if preload == 'onthefly' and in_memory == 'wave':
+            self.waves = [None] * len(indices)
+
+    def get_feat(self, idx):
+        if self.waves is not None:
+            if self.waves[idx] is None:
+                waveform, _ = torchaudio.load(self.file_list[idx])
+                self.waves[idx] = waveform
+            return self.waves[idx]
+            #self.waves = [self.waves[idx] for idx in indices]
+            #self.get_feat = lambda idx: self.waves[idx]
         elif self.features is None:
-            self.get_feat = lambda idx: self.file_list[idx]
+            return self.file_list[idx]
+            #self.get_feat = lambda idx: self.file_list[idx]
         elif self.aug_features is None:
-            self.get_feat = lambda idx: (
-                self.features[feat_intvls[idx][0]:feat_intvls[idx][1]],)
+            return self.features[feat_intvls[idx][0]:feat_intvls[idx][1], ]
+            # self.get_feat = lambda idx: (
+            #    self.features[feat_intvls[idx][0]:feat_intvls[idx][1]],)
         else:
-            self.get_feat = lambda idx: (self.features[feat_intvls[idx][0]:feat_intvls[idx][1]],
-                                         self.aug_features[aug_feat_intvls[idx][0]:aug_feat_intvls[idx][1]])
+            return (self.features[feat_intvls[idx][0]:feat_intvls[idx][1]],
+                    self.aug_features[aug_feat_intvls[idx][0]:aug_feat_intvls[idx][1]])
+            # self.get_feat = lambda idx: (self.features[feat_intvls[idx][0]:feat_intvls[idx][1]],
+            #                             self.aug_features[aug_feat_intvls[idx][0]:aug_feat_intvls[idx][1]])
 
     def __getitem__(self, index):
 

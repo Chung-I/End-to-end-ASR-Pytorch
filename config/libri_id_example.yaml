@@ -5,7 +5,9 @@ data:
     train_split: ['train-clean-100']      # Name of data splits to be used as training set
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: False                       # Enable/Disable bucketing 
-    batch_size: 64
+    batch_size: 128
+    in_memory: "wave"
+    preload: "onthefly" # 'preload'(True)/'onthefly'/False
   audio:
     num_freq: 1025
     num_mels: 80
@@ -29,7 +31,7 @@ data:
     vocab_file: 'tests/sample_data/subword.model'
 
 hparas:                                   # Experiment hyper-parameters
-  valid_step: 200000
+  valid_step: 240000
   curriculum: 0
   max_step: 240001
   tf_start: 1.0
@@ -38,9 +40,9 @@ hparas:                                   # Experiment hyper-parameters
   grad_clip: 'inf'
   optimizer:
     type: 'Adam'
-    lr: 0.0001
+    lr: 0.001
   lr_scheduler:
-    type: 'reduce_lr_on_plateau'                   # 'fixed'/'warmup'/'decay'/'reduce_lr_on_plateau'
+    type: 'fixed'                   # 'fixed'/'warmup'/'decay'/'reduce_lr_on_plateau'/'manual'
   freq_loss_type: 'l1'                         # 'l1'/'mse'
   differential_loss: False
   emphasize_linear_low: False
