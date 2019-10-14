@@ -4,8 +4,10 @@ import os
 import matplotlib.pyplot as plt
 import math
 import time
+import itertools
 from tqdm import tqdm
 import torch.multiprocessing as mp
+import torchaudio
 
 from numpy.lib.format import open_memmap
 import torch
@@ -14,7 +16,7 @@ from numpy.linalg import norm
 from torch import nn
 from torch._six import inf
 import editdistance as ed
-from sklearn.metrics import roc_curve, auc, roc_auc_score
+from sklearn.metrics import roc_curve, auc, roc_auc_score, confusion_matrix
 
 import matplotlib
 matplotlib.use('Agg')
@@ -270,6 +272,7 @@ def mp_progress_map(func, arg_iter, num_workers):
 
 def wave_to_feat_and_save_factory(wave_to_feat: Callable):
     global func
+
     def func(wavfile):
         feat = wave_to_feat(wavfile)
         wavfile = Path(wavfile)
@@ -315,6 +318,34 @@ def write_sliced_array(sequence, out_path, total_len,
     print('done.')
 
 
+def cm_figure(y_true, y_pred, class_names, normalize=False, cmap=plt.cm.Blues):
+    cm = confusion_matrix(y_true, y_pred)
+    if normalize:
+        # Normalize the confusion matrix.
+        # cm = np.around(cm.astype('float') / cm.sum(axis=1)[:, np.newaxis], decimals=2)
+        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+
+    figure = plt.figure(figsize=(64, 64))
+    plt.imshow(cm, interpolation='nearest', cmap=cmap)
+    plt.title("Confusion matrix")
+    plt.colorbar()
+    tick_marks = np.arange(len(class_names))
+    plt.xticks(tick_marks, class_names, rotation=45)
+    plt.yticks(tick_marks, class_names)
+
+    # Use white text if squares are dark; otherwise black.
+    threshold = cm.max() / 2.
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        color = "white" if cm[i, j] > threshold else "black"
+        if cm[i, j] != 0:
+            plt.text(j, i, cm[i, j], horizontalalignment="center", color=color)
+
+    plt.tight_layout()
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    return figure
+
+
 def roc_score(spkr_emb, spkr_id):
     score_matrix, label_matrix, true_match, false_match = [], [], [], []
     for i in range(len(spkr_id)):
@@ -338,3 +369,10 @@ def roc_score(spkr_emb, spkr_id):
     dcf2 = np.min(100*(0.01*(1-tpr)+0.99*fpr))
     dcf3 = np.min(1000*(0.001*(1-tpr)+0.999*fpr))
     return eer, dcf2, dcf3
+
+def load_clone(wavfile):
+    from copy import deepcopy
+    waveform, _ = torchaudio.load(wavfile)
+    wave_clone = deepcopy(waveform)
+    del waveform
+    return wave_clone
