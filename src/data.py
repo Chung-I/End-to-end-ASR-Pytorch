@@ -91,7 +91,8 @@ def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
         bucket_size = batch_size if bucketing and (
             not ascending) else 1  # Ascending without bucketing
         # Do not use bucketing for dev set
-        dv_set = Dataset(path, dev_split, tokenizer, 1, wave_to_feat=wave_to_feat, in_memory=in_memory)
+        dv_set = Dataset(path, dev_split, tokenizer, 1,
+                         wave_to_feat=wave_to_feat, in_memory=in_memory)
         tr_set = Dataset(path, train_split, tokenizer,
                          bucket_size, ascending=ascending, wave_to_feat=wave_to_feat, in_memory=in_memory)
         # Messages to show
@@ -103,12 +104,14 @@ def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
         # Testing model
         mode = 'test'
         # Do not use bucketing for dev set
-        dv_set = Dataset(path, dev_split, tokenizer, 1, wave_to_feat=wave_to_feat, in_memory=in_memory)
+        dv_set = Dataset(path, dev_split, tokenizer, 1,
+                         wave_to_feat=wave_to_feat, in_memory=in_memory)
         # Do not use bucketing for test set
-        tt_set = Dataset(path, test_split, tokenizer, 1, wave_to_feat=wave_to_feat, in_memory=in_memory)
+        tt_set = Dataset(path, test_split, tokenizer, 1,
+                         wave_to_feat=wave_to_feat, in_memory=in_memory)
         # Messages to show
-        msg_list = _data_msg(name, path, dev_split.__str__(), len(dv_set),
-                             test_split.__str__(), len(tt_set), batch_size, False)
+        msg_list = _data_msg(name, path, dev_split.__str__(), dv_set,
+                             test_split.__str__(), tt_set, batch_size, False)
         msg_list = [m.replace('Dev', 'Test').replace(
             'Train', 'Dev') for m in msg_list]
         return dv_set, tt_set, batch_size, batch_size, mode, msg_list
@@ -132,8 +135,8 @@ def create_textset(tokenizer, train_split, dev_split, name, path, bucketing, bat
     tr_set = Dataset(path, train_split, tokenizer, bucket_size)
 
     # Messages to show
-    msg_list = _data_msg(name, path, train_split.__str__(), len(tr_set),
-                         dev_split.__str__(), len(dv_set), batch_size, bucketing)
+    msg_list = _data_msg(name, path, train_split.__str__(), tr_set,
+                         dev_split.__str__(), dv_set, batch_size, bucketing)
 
     return tr_set, dv_set, tr_loader_bs, batch_size, msg_list
 
@@ -145,15 +148,19 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, ta
     audio_converter = load_audio_transform(**audio)
     # Text tokenizer
     tokenizer = load_text_encoder(**text)
-    #Whether to extract feature in advance or not
-    in_memory = corpus.pop('in_memory') if corpus.get('in_memory') is not None else False
+    # Whether to extract feature in advance or not
+    in_memory = corpus.pop('in_memory') if corpus.get(
+        'in_memory') is not None else False
     corpus['in_memory'] = in_memory
     wave_to_feat = audio_converter.wave_to_feat if in_memory else None
-    collate_fn_wave_to_feat = (lambda x: x) if in_memory else audio_converter.wave_to_feat
+    collate_fn_wave_to_feat = (
+        lambda x: x) if in_memory else audio_converter.wave_to_feat
     # Dataset (in testing mode, tr_set=dv_set, dv_set=tt_set)
     tr_set, dv_set, tr_loader_bs, dv_loader_bs, mode, data_msg = create_dataset(
         tokenizer, ascending, **corpus, wave_to_feat=wave_to_feat)
     spkr_num = tr_set.spkr_num
+    spkr_weight = tr_set.spkr_weight
+    spkr_id_list = tr_set.spkr_id_list
     # Collect function
     collect_tr = partial(
         collect_audio_batch, audio_transform=collate_fn_wave_to_feat, mode=mode, task=task)
@@ -171,7 +178,7 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, ta
     data_msg.append('I/O spec.  | Audio feature = {}\t| feature dim = {}\t| Token type = {}\t| Vocab size = {}'
                     .format(audio_converter.feat_type, audio_converter.feat_dim, tokenizer.token_type, tokenizer.vocab_size))
 
-    return tr_set, dv_set, tokenizer, audio_converter, data_msg, spkr_num
+    return tr_set, dv_set, tokenizer, audio_converter, data_msg, (spkr_weight, spkr_id_list)
 
 
 def load_textset(n_jobs, use_gpu, pin_memory, corpus, text):

@@ -47,13 +47,13 @@ class LibriDataset(Dataset):
         list_of_feat_lens = []
         list_of_aug_features = []
         list_of_aug_feat_lens = []
-        file_list, spkr_id_list = [], []
+        file_list = []
 
         if not callable(wave_to_feat):
             for s in split:
                 file_list += list(Path(join(path, s)).rglob("*.flac"))
         else:
-            pt_path_to_np_array = lambda path: torch.load(path).numpy()
+            def pt_path_to_np_array(path): return torch.load(path).numpy()
             mmap_mode = 'r' if in_memory == 'mmap' else None
             for s in split:
                 split_dir = Path(join(path, s))
@@ -62,7 +62,8 @@ class LibriDataset(Dataset):
                 if not data_file.exists():
                     files = list(split_dir.rglob("*.flac"))
                     with open(data_file.with_name("files.txt"), 'w') as fp:
-                        fp.write("\n".join([str(f.relative_to(split_dir)) for f in files]))
+                        fp.write(
+                            "\n".join([str(f.relative_to(split_dir)) for f in files]))
 
                     feat_lens, feat_names, aug_feat_lens, aug_feat_names = \
                         zip(*mp_progress_map(wave_to_feat_and_save_factory(wave_to_feat),
@@ -70,24 +71,31 @@ class LibriDataset(Dataset):
 
                     write_sliced_array(feat_names, str(data_file), sum(feat_lens),
                                        func=pt_path_to_np_array)
-                    np.save(data_file.with_name("lens.npy"), np.array(feat_lens))
+                    np.save(data_file.with_name(
+                        "lens.npy"), np.array(feat_lens))
 
                     if aug_feat_lens[0] is not None:
                         write_sliced_array(aug_feat_names, str(aug_data_file),
                                            sum(aug_feat_lens), func=pt_path_to_np_array)
-                        np.save(data_file.with_name("aug_lens.npy"), np.array(aug_feat_lens))
+                        np.save(data_file.with_name("aug_lens.npy"),
+                                np.array(aug_feat_lens))
                 else:
                     with open(data_file.with_name("files.txt")) as fp:
-                        files = [split_dir.joinpath(line) for line in fp.read().splitlines()]
+                        files = [split_dir.joinpath(line)
+                                 for line in fp.read().splitlines()]
                     print(f"feature file {data_file} exists; loading")
-                list_of_features.append(torch.from_numpy(np.load(data_file, mmap_mode=mmap_mode)))
+                list_of_features.append(torch.from_numpy(
+                    np.load(data_file, mmap_mode=mmap_mode)))
                 feat_lens = np.load(data_file.with_name("lens.npy"))
                 list_of_feat_lens.append(feat_lens)
 
                 if aug_data_file.exists():
-                    print(f"augmented feature file {aug_data_file} exists; loading")
-                    list_of_aug_features.append(torch.from_numpy(np.load(aug_data_file, mmap_mode=mmap_mode)))
-                    aug_feat_lens = np.load(aug_data_file.with_name("aug_lens.npy"))
+                    print(
+                        f"augmented feature file {aug_data_file} exists; loading")
+                    list_of_aug_features.append(torch.from_numpy(
+                        np.load(aug_data_file, mmap_mode=mmap_mode)))
+                    aug_feat_lens = np.load(
+                        aug_data_file.with_name("aug_lens.npy"))
                     list_of_aug_feat_lens.append(aug_feat_lens)
 
                 file_list += files
@@ -101,35 +109,48 @@ class LibriDataset(Dataset):
             aug_feat_ptr = np.pad(np.concatenate(list_of_aug_feat_lens, axis=0), (1, 0), mode='constant').cumsum() \
                 if list_of_aug_feat_lens else None
 
-        self.spkr_id_dict = {}
-        for s in split:
-            spkr_id_list += sorted([int(item.name)
-                                    for item in Path(join(path, s)).iterdir() if item.is_dir()])
         assert len(file_list) > 0, "No data found @ {}".format(path)
-
-        # Generate speaker id dict
-        spkr_id_list = list(dict.fromkeys(spkr_id_list))  # Remove duplicate id
-        for idx, spkr_id in enumerate(spkr_id_list):
-            self.spkr_id_dict[spkr_id] = idx
-        self.spkr_num = len(self.spkr_id_dict)
 
         # Read text
         text = Parallel(n_jobs=READ_FILE_THREADS)(
             delayed(read_text)(str(f)) for f in file_list)
         text = [tokenizer.encode(txt) for txt in text]
 
-        indices = sorted(range(len(text)), reverse=not ascending, key=lambda idx: len(text.__getitem__(idx)))
+        # Generate speaker id dict
+        self.spkr_id_dict = {}
+        spkr_id_list = []
+        for s in split:
+            spkr_id_list += sorted([int(item.name)
+                                    for item in Path(join(path, s)).iterdir() if item.is_dir()])
+        spkr_id_list = list(dict.fromkeys(spkr_id_list))  # Remove duplicate id
+        for idx, spkr_id in enumerate(spkr_id_list):
+            self.spkr_id_dict[spkr_id] = idx
+        self.spkr_num = len(self.spkr_id_dict)
+        self.spkr_id_list = spkr_id_list
+
+        spkr_id_count = [0] * self.spkr_num
+        for f in file_list:
+            idx = self.get_id(f)
+            spkr_id_count[idx] += 1
+        spkr_count_reci = 1/torch.FloatTensor(spkr_id_count)
+        self.spkr_weight = spkr_count_reci/spkr_count_reci.sum()
+        # Speaker things done.
+
+        indices = sorted(range(len(text)), reverse=not ascending,
+                         key=lambda idx: len(text.__getitem__(idx)))
         self.file_list = [file_list[idx] for idx in indices]
         self.text = [text[idx] for idx in indices]
         if self.features is not None:
             feat_intvls = [(feat_ptr[idx], feat_ptr[idx+1]) for idx in indices]
         if self.aug_features is not None:
-            aug_feat_intvls = [(aug_feat_ptr[idx], aug_feat_ptr[idx+1]) for idx in indices]
+            aug_feat_intvls = [(aug_feat_ptr[idx], aug_feat_ptr[idx+1])
+                               for idx in indices]
 
         if self.features is None:
             self.get_feat = lambda idx: self.file_list[idx]
         elif self.aug_features is None:
-            self.get_feat = lambda idx: (self.features[feat_intvls[idx][0]:feat_intvls[idx][1]],)
+            self.get_feat = lambda idx: (
+                self.features[feat_intvls[idx][0]:feat_intvls[idx][1]],)
         else:
             self.get_feat = lambda idx: (self.features[feat_intvls[idx][0]:feat_intvls[idx][1]],
                                          self.aug_features[aug_feat_intvls[idx][0]:aug_feat_intvls[idx][1]])
@@ -141,7 +162,7 @@ class LibriDataset(Dataset):
             index = min(len(self.file_list)-self.bucket_size, index)
             return [(self.get_feat(idx), self.text[idx], self.get_id(self.file_list[idx])) for idx in
                     range(index, index + self.bucket_size)]
-                    #zip(self.file_list[index:index+self.bucket_size], self.text[index:index+self.bucket_size])]
+            # zip(self.file_list[index:index+self.bucket_size], self.text[index:index+self.bucket_size])]
         else:
             return self.get_feat(index), self.text[index], self.get_id(self.file_list[index])
 

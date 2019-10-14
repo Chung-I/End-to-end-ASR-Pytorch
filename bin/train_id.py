@@ -2,6 +2,7 @@ from functools import partial
 import os
 import math
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,14 +11,16 @@ from src.solver import BaseSolver
 from src.asr import ASR
 from src.tts import FeedForwardTTS, HighwayTTS, Tacotron, Tacotron2
 from src.id_net import RNNSimple
+from src.netvlad import ThinResNet
 from src.optim import Optimizer
 from src.data import load_dataset
 from src.module import RNNLayer
 from src.util import human_format, cal_er, feat_to_fig, freq_loss, \
-    get_mask_from_sequence_lengths, get_grad_norm, roc_score
+    get_mask_from_sequence_lengths, get_grad_norm, roc_score, cm_figure
 
 DEV_N_EXAMPLES = 0  # How many examples to show in tensorboard
 CKPT_STEP = 10000
+CKPT_EPOCH = 20
 
 
 class Solver(BaseSolver):
@@ -51,63 +54,79 @@ class Solver(BaseSolver):
 
     def load_data(self):
         ''' Load data for training/validation, store tokenizer and input/output shape'''
-        self.tr_set, self.dv_set, self.tokenizer, self.audio_converter, msg, self.spkr_num = \
-            load_dataset(self.paras.njobs, self.paras.gpu, self.paras.pin_memory,
-                         self.curriculum > 0, **self.config['data'])
+        self.tr_set, self.dv_set, self.tokenizer, self.audio_converter, msg, (self.spkr_weight, self.spkr_id_list) = load_dataset(
+            self.paras.njobs, self.paras.gpu, self.paras.pin_memory, self.curriculum > 0, **self.config['data'])
         self.vocab_size = self.tokenizer.vocab_size
         self.feat_dim, _ = self.audio_converter.feat_dim                  # ignore linear dim
+        self.spkr_num = len(self.spkr_weight)
+        self.spkr_weight = self.spkr_weight.to(self.device)
         self.verbose(msg)
 
     def set_model(self):
         ''' Setup ASR model and optimizer '''
         # Model
-        self.asr = ASR(self.feat_dim, self.vocab_size, **
-                       self.config['model']).to(self.device)
+        id_in_dim = 80
+        self.asr, self.tts = None, None
         self.layer_num = self.config['tts']['layer_num']
-        with torch.no_grad():
-            seq_len = 64
-            n_channels = self.config['model']['delta'] + 1
-            dummy_inputs = torch.randn(
-                (1, seq_len, n_channels * self.feat_dim)).to(self.device)
-            dummy_feat_len = torch.full((1, ), seq_len)
-            dummy_outs, dummy_out_len, _ = \
-                self.asr.encoder.get_hidden_states(
-                    dummy_inputs, seq_len, self.layer_num)
-            tts_upsample_rate = (dummy_feat_len / dummy_out_len).int().item()
-            tts_in_dim = dummy_outs.size(-1)
+        if self.layer_num > -2:
+            self.asr = ASR(self.feat_dim, self.vocab_size, **
+                           self.config['model']).to(self.device)
+            with torch.no_grad():
+                seq_len = 64
+                n_channels = self.config['model']['delta'] + 1
+                dummy_inputs = torch.randn(
+                    (1, seq_len, n_channels * self.feat_dim)).to(self.device)
+                dummy_feat_len = torch.full((1, ), seq_len)
+                dummy_outs, dummy_out_len, _ = \
+                    self.asr.encoder.get_hidden_states(
+                        dummy_inputs, seq_len, self.layer_num)
+                tts_upsample_rate = (
+                    dummy_feat_len / dummy_out_len).int().item()
+                tts_in_dim = dummy_outs.size(-1)
+                id_in_dim = tts_in_dim
 
-        if self.config['tts']['type'] == "linear":
-            # self.asr.encoder.layers[self.layer_num].out_dim
-            self.tts = FeedForwardTTS(tts_in_dim,
+            if self.config['tts']['type'] == "linear":
+                # self.asr.encoder.layers[self.layer_num].out_dim
+                self.tts = FeedForwardTTS(tts_in_dim,
+                                          self.feat_dim, self.config['tts']['num_layers'],
+                                          tts_upsample_rate).to(self.device)
+            elif self.config['tts']['type'] == "highway":
+                self.tts = HighwayTTS(tts_in_dim,
                                       self.feat_dim, self.config['tts']['num_layers'],
                                       tts_upsample_rate).to(self.device)
-        elif self.config['tts']['type'] == "highway":
-            self.tts = HighwayTTS(tts_in_dim,
-                                  self.feat_dim, self.config['tts']['num_layers'],
-                                  tts_upsample_rate).to(self.device)
-        elif self.config['tts']['type'] == "tacotron2":
-            self.tts = Tacotron2(self.feat_dim,
-                                 tts_in_dim, self.config['tts']).to(self.device)
+            elif self.config['tts']['type'] == "tacotron2":
+                self.tts = Tacotron2(self.feat_dim,
+                                     tts_in_dim, self.config['tts']).to(self.device)
+            else:
+                self.tts = None
+
+        id_in_dim = self.feat_dim if self.tts is not None else id_in_dim
+        if self.config['id_net']['type'] == "netvlad":
+            self.config['id_net'].pop('type')
+            self.id_net = ThinResNet(
+                self.spkr_num, **self.config['id_net']).to(self.device)
         else:
-            self.tts = None
+            self.config['id_net'].pop('type')
+            self.id_net = RNNSimple(
+                id_in_dim, self.spkr_num, **self.config['id_net']).to(self.device)
 
-        id_in_dim = tts_in_dim if self.tts is None else self.feat_dim
-        self.id_net = RNNSimple(
-            id_in_dim, self.spkr_num, **self.config['id_net']).to(self.device)
-
-        self.verbose(self.asr.create_msg())
+        # self.verbose(self.asr.create_msg())
         # self.verbose(self.tts.create_msg())
-        if self.tts is None:
+        if self.layer_num < -1:
+            model_paras = [{'params': self.id_net.parameters()}]
+        elif self.tts is None:
             model_paras = [{'params': self.asr.parameters()},
                            {'params': self.id_net.parameters()}]
+            for param in self.asr.parameters():
+                param.requires_grad = False
         else:
             model_paras = [{'params': self.asr.parameters()},
                            {'params': self.tts.parameters()},
                            {'params': self.id_net.parameters()}]
+            for param in self.asr.parameters():
+                param.requires_grad = False
             for param in self.tts.parameters():
                 param.requires_grad = False
-        for param in self.asr.parameters():
-            param.requires_grad = False
 
         # Losses
         self.freq_loss = partial(
@@ -157,7 +176,8 @@ class Solver(BaseSolver):
             # Load weights
             ckpt = torch.load(
                 self.paras.load, map_location=self.device if self.mode == 'train' else 'cpu')
-            self.asr.load_state_dict(ckpt['model'])
+            if self.asr is not None:
+                self.asr.load_state_dict(ckpt['model'])
             if self.tts is not None:
                 self.tts.load_state_dict(ckpt['tts'])
             # if self.amp:
@@ -189,7 +209,6 @@ class Solver(BaseSolver):
         '''
         ckpt_path = os.path.join(self.ckpdir, f_name)
         full_dict = {
-            "asr": self.asr.state_dict(),
             "id_net": self.id_net.state_dict(),
             "optimizer": self.optimizer.get_opt_state_dict(),
             "global_step": self.step,
@@ -198,6 +217,8 @@ class Solver(BaseSolver):
         # Additional modules to save
         # if self.amp:
         #    full_dict['amp'] = self.amp_lib.state_dict()
+        if self.asr is not None:
+            full_dict['asr'] = self.asr.state_dict()
         if self.tts is not None:
             full_dict['tts'] = self.tts.state_dict()
 
@@ -212,14 +233,16 @@ class Solver(BaseSolver):
         #acc_loss, att_loss, emb_loss = None, None, None
         n_epochs = 0
         self.timer.set()
-        loss_history = []
+        loss_history, loss_history_1000, loss_history_epoch = [], [], []
+        true_history, true_history_1000, true_history_epoch = [], [], []
+        pred_history, pred_history_1000, pred_history_epoch = [], [], []
 
         while self.step < self.max_step:
             # Renew dataloader to enable random sampling
             if self.curriculum > 0 and n_epochs == self.curriculum:
                 self.verbose(
                     'Curriculum learning ends after {} epochs, starting random sampling.'.format(n_epochs))
-                self.tr_set, _, _, _, _, _, _ = \
+                self.tr_set, _, _, _, _, _, _, _ = \
                     load_dataset(self.paras.njobs, self.paras.gpu, self.paras.pin_memory,
                                  False, **self.config['data'])
             for data in self.tr_set:
@@ -234,21 +257,25 @@ class Solver(BaseSolver):
                 # Forward model
                 # Note: txt should NOT start w/ <sos>
                 with torch.no_grad():
-                    deltas = self.asr.apply_delta_acceleration(feat)
-                    hidden_outs, hidden_len, _ = self.asr.encoder.get_hidden_states(
-                        deltas, feat_len, self.layer_num)
-                    if self.tts is not None:
-                        feat_pred, _, _ = self.tts(
-                            hidden_outs, hidden_len, feat, tf_rate=tf_rate)
-                        feat_pred_len = feat_pred.size(-2)
-                        if not isinstance(self.tts, Tacotron2):
-                            feat_pred = feat_pred.unsqueeze(1)
-                        mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len).unsqueeze(
-                            1).unsqueeze(-1).expand_as(feat_pred).bool()
-                        feat_pred = feat_pred.masked_fill(~mask, 0.0)
-                        if self.step == 1:
-                            tts_loss = self.freq_loss(
-                                feat_pred, feat[..., :feat_pred_len, :])
+                    if self.layer_num < -1:
+                        hidden_outs = feat
+                        hidden_len = feat_len
+                    else:
+                        deltas = self.asr.apply_delta_acceleration(feat)
+                        hidden_outs, hidden_len, _ = self.asr.encoder.get_hidden_states(
+                            deltas, feat_len, self.layer_num)
+                        if self.tts is not None:
+                            feat_pred, _, _ = self.tts(
+                                hidden_outs, hidden_len, feat, tf_rate=tf_rate)
+                            feat_pred_len = feat_pred.size(-2)
+                            if not isinstance(self.tts, Tacotron2):
+                                feat_pred = feat_pred.unsqueeze(1)
+                            mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len).unsqueeze(
+                                1).unsqueeze(-1).expand_as(feat_pred).bool()
+                            feat_pred = feat_pred.masked_fill(~mask, 0.0)
+                            if self.step == 1:
+                                tts_loss = self.freq_loss(
+                                    feat_pred, feat[..., :feat_pred_len, :])
 
                 id_in_feat = hidden_outs if self.tts is None else feat_pred
                 spkr_embedding, spkr_pred = self.id_net(id_in_feat, hidden_len)
@@ -257,12 +284,22 @@ class Solver(BaseSolver):
                     scale = 30
                     spkr_pred[np.arange(len(spkr_id)), spkr_id] -= margin
                     spkr_pred *= scale
-                total_loss = F.cross_entropy(spkr_pred, spkr_id)
-                loss_history.append(total_loss.cpu().item())
+                total_loss = F.cross_entropy(
+                    spkr_pred, spkr_id, weight=self.spkr_weight)
 
-                print(spkr_embedding[-1][-5:])
-                print(spkr_id[-1])
-                print(spkr_pred[-1][spkr_id[-1]])
+                # Save training process of loss, spkr_pred, spkr_id
+                loss = total_loss.cpu().item()
+                loss_history.append(loss)
+                # loss_history_1000.append(loss)
+                loss_history_epoch.append(loss)
+                pred = spkr_pred.cpu().argmax(dim=1).tolist()
+                # pred_history.extend(pred)
+                # pred_history_1000.extend(pred)
+                pred_history_epoch.extend(pred)
+                true = spkr_id.cpu().tolist()
+                # true_history.extend(true)
+                # true_history_1000.extend(true)
+                true_history_epoch.extend(true)
 
                 self.timer.cnt('fw')
 
@@ -270,13 +307,33 @@ class Solver(BaseSolver):
                 grad_norm = self.backward(total_loss)
                 self.step += 1
 
+                #print(spkr_embedding[:3, -5:].data)
+                # print(spkr_id[:3].data)
+                #print(spkr_pred[:3, spkr_id[:3]].data)
+                # print(spkr_pred[:3].max(dim=1))
+                # print(grad_norm)
+
                 # Logger
                 if (self.step == 1) or (self.step % self.PROGRESS_STEP == 0):
                     loss = sum(loss_history)/len(loss_history)
-                    loss_history.clear()
                     self.progress('Tr stat | Loss - {:.2f} | Grad. Norm - {:.4f} | {}'
                                   .format(loss, grad_norm, self.timer.show()))
                     self.write_log('loss', {'tr_id': loss})
+                    # self.write_log('cmatrix', [cm_figure(
+                    #     true_history, pred_history, self.spkr_id_list)])
+                    loss_history.clear()
+                    # true_history.clear()
+                    # pred_history.clear()
+                    # if self.step % 1000 == 0:
+                    #    loss_1000 = sum(loss_history_1000) / \
+                    #        len(loss_history_1000)
+                    #    self.write_log('loss', {'tr_id_1000': loss_1000})
+                    #    self.write_log('cmatrix_1000', [cm_figure(
+                    #        true_history_1000, pred_history_1000, self.spkr_id_list)])
+                    #    loss_history_1000.clear()
+                    #    true_history_1000.clear()
+                    #    pred_history_1000.clear()
+
                     # self.progress('Tr stat | Loss - {:.2f} | Grad. Norm - {:.4f} | {}'
                     #              .format(total_loss.cpu().item(), grad_norm, self.timer.show()))
                     #self.write_log('loss', {'tr_id': total_loss})
@@ -292,6 +349,23 @@ class Solver(BaseSolver):
                 if self.step > self.max_step:
                     break
             n_epochs += 1
+            loss_epoch = sum(loss_history_epoch) / len(loss_history_epoch)
+            correctness = (np.array(true_history_epoch) ==
+                           np.array(pred_history_epoch))
+            acc_epoch = correctness.mean()
+            self.write_log('loss', {'tr_id_epoch': loss_epoch})
+            self.write_log('acc', {'acc_epoch': acc_epoch})
+            self.write_log('cmatrix_epoch', [cm_figure(
+                true_history_epoch, pred_history_epoch, self.spkr_id_list)])
+            loss_history_epoch.clear()
+            true_history_epoch.clear()
+            pred_history_epoch.clear()
+
+            if ((n_epochs > 1) and (n_epochs % CKPT_EPOCH == 0)):
+                # Regular ckpt
+                self.save_checkpoint('step_{}.pth'.format(
+                    self.step), 'spkr_acc_epoch', acc_epoch)
+
         self.log.close()
 
     def validate(self):
