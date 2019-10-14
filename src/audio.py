@@ -12,7 +12,7 @@ import scipy.signal
 import pandas as pd
 from lib.filters import create_mel_filterbank
 from lib.mfcc import create_mfcc_transform
-from src.util import mp_progress_map
+from src.util import mp_progress_map, load_clone
 
 import librosa
 import random
@@ -442,7 +442,7 @@ class AudioConverter(AudioProcessor):
             for noise_type, (_snr_range, n_files_range) in noise['genre'].items():
                 files = list(self.noise_root.joinpath(noise_type).rglob("*.wav"))
                 if in_memory == 'wave':
-                    files, _ = zip(*mp_progress_map(torchaudio.load, ((f,) for f in files), 6))
+                    files = mp_progress_map(load_clone, ((f,) for f in files), 6)
                 noise_source = NoiseSource(files, _snr_range, n_files_range)
                 self.noise_sources[noise_type] = noise_source
         self.snr_range = snr_range

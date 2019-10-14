@@ -321,6 +321,7 @@ class Encoder(nn.Module):
 
         self.vgg = False
         cnn_type = cnn.pop('type')
+        cnn_encoder = None
         if cnn_type == 'vgg':
             self.vgg = True
             nonlinearity = cnn['nonlinearity'] if cnn.get('nonlinearity') else 'relu'
@@ -333,10 +334,11 @@ class Encoder(nn.Module):
         elif cnn_type == 'res':
             cnn_encoder = ResCNN(input_size, **cnn)
             self.sample_rate = self.sample_rate*4
-        else:
+        elif cnn_type != 'none':
             raise NotImplementedError
-        module_list.append(cnn_encoder)
-        input_dim = cnn_encoder.out_dim
+        if cnn_encoder is not None:
+            module_list.append(cnn_encoder)
+            input_dim = cnn_encoder.out_dim
 
 
         if module in ['LSTM','GRU']:

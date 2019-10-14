@@ -7,6 +7,7 @@ import time
 import itertools
 from tqdm import tqdm
 import torch.multiprocessing as mp
+import torchaudio
 
 from numpy.lib.format import open_memmap
 import torch
@@ -368,3 +369,10 @@ def roc_score(spkr_emb, spkr_id):
     dcf2 = np.min(100*(0.01*(1-tpr)+0.99*fpr))
     dcf3 = np.min(1000*(0.001*(1-tpr)+0.999*fpr))
     return eer, dcf2, dcf3
+
+def load_clone(wavfile):
+    from copy import deepcopy
+    waveform, _ = torchaudio.load(wavfile)
+    wave_clone = deepcopy(waveform)
+    del waveform
+    return wave_clone

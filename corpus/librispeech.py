@@ -10,7 +10,7 @@ import torchaudio
 import torch
 from torch.utils.data import Dataset
 
-from src.util import mp_progress_map, wave_to_feat_and_save_factory, write_sliced_array
+from src.util import mp_progress_map, wave_to_feat_and_save_factory, write_sliced_array, load_clone
 
 # Additional (official) text src provided
 OFFICIAL_TXT_SRC = ['librispeech-lm-norm.txt']
@@ -57,8 +57,7 @@ class LibriDataset(Dataset):
         elif in_memory == 'wave':
             for s in split:
                 file_list += list(Path(join(path, s)).rglob("*.flac"))
-            self.waves, _ = zip(*mp_progress_map(torchaudio.load, ((f,)
-                                                                   for f in file_list), READ_FILE_THREADS))
+            self.waves = mp_progress_map(load_clone, ((f,) for f in file_list), READ_FILE_THREADS)
         elif in_memory == True or in_memory == 'mmap':
             def pt_path_to_np_array(path): return torch.load(path).numpy()
             mmap_mode = 'r' if in_memory == 'mmap' else None
