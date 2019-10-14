@@ -27,7 +27,7 @@ class Solver(BaseSolver):
 
     def load_data(self):
         ''' Load data for training/validation, store tokenizer and input/output shape'''
-        self.tr_set, self.dv_set, self.tokenizer, self.audio_converter, msg = \
+        self.tr_set, self.dv_set, self.tokenizer, self.audio_converter, msg, _ = \
                          load_dataset(self.paras.njobs, self.paras.gpu, self.paras.pin_memory, 
                                       self.curriculum>0, **self.config['data'])
         self.vocab_size = self.tokenizer.vocab_size
