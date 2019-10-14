@@ -204,7 +204,7 @@ class AudioProcessor(nn.Module):
         Return:
             waveform of shape (samples)
         """
-        if isinstance(wav_path, str):
+        if isinstance(wav_path, str) or isinstance(wav_path, Path):
             waveform, sr = torchaudio.load(wav_path)
             assert self.sr == sr, "Sample rate mismatch. Expected %d but get %d" \
                 % (self.sr, sr)

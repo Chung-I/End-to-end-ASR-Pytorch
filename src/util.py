@@ -236,7 +236,7 @@ def get_mask_from_sequence_lengths(sequence_lengths: torch.Tensor, max_length: i
     # (batch_size, max_length)
     ones = sequence_lengths.new_ones(sequence_lengths.size(0), max_length)
     range_tensor = ones.cumsum(dim=1)
-    return (sequence_lengths.unsqueeze(1) >= range_tensor).long()
+    return (sequence_lengths.unsqueeze(1) >= range_tensor).bool()
 
 
 def get_grad_norm(parameters, norm_type=2):

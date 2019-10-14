@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 
 from src.util import init_weights, init_gate
-from src.module import VGGExtractor, CNN, RNNLayer, ScaleDotAttention, LocationAwareAttention
+from src.module import VGGExtractor, CNN, ResCNN, RNNLayer, ScaleDotAttention, LocationAwareAttention
 from src.audio import Delta
 
 class ASR(nn.Module):
@@ -25,6 +25,7 @@ class ASR(nn.Module):
 
         # Preprosessing
         if delta > 0:
+            assert encoder['cnn']['type'] != 'res', "res accept mel without deltas"
             self.delta = Delta(order=delta)
         # Modules
         self.encoder = Encoder(input_size, delta + 1, **encoder)
@@ -319,22 +320,23 @@ class Encoder(nn.Module):
         input_dim = input_size * in_channel
 
         self.vgg = False
-        if cnn['type'] == 'vgg':
+        cnn_type = cnn.pop('type')
+        if cnn_type == 'vgg':
             self.vgg = True
             nonlinearity = cnn['nonlinearity'] if cnn.get('nonlinearity') else 'relu'
             batch_norm = cnn['batch_norm'] if cnn.get('batch_norm') else None
-            vgg_extractor = VGGExtractor(input_size, in_channel, nonlinearity, batch_norm)
-            module_list.append(vgg_extractor)
-            input_dim = vgg_extractor.out_dim
+            cnn_encoder = VGGExtractor(input_size, in_channel, nonlinearity, batch_norm)
             self.sample_rate = self.sample_rate*4
-        elif cnn['type'] == 'cnn':
-            cnn.pop('type')
+        elif cnn_type == 'cnn':
             cnn_encoder = CNN(input_size, in_channel, **cnn)
-            module_list.append(cnn_encoder)
-            input_dim = cnn_encoder.out_dim
             self.sample_rate = self.sample_rate*cnn_encoder._downsample_rate
-        elif cnn['type'] != 'none':
+        elif cnn_type == 'res':
+            cnn_encoder = ResCNN(input_size, **cnn)
+            self.sample_rate = self.sample_rate*4
+        else:
             raise NotImplementedError
+        module_list.append(cnn_encoder)
+        input_dim = cnn_encoder.out_dim
 
 
         if module in ['LSTM','GRU']:
@@ -344,7 +346,8 @@ class Encoder(nn.Module):
                 input_dim = module_list[-1].out_dim
                 self.sample_rate = self.sample_rate*sample_rate[l]
         else:
-            raise NotImplementedError
+            #raise NotImplementedError
+            pass
 
         self.in_dim = input_size
         self.out_dim = input_dim
