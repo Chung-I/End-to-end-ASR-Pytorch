@@ -5,6 +5,7 @@ from pathlib import Path
 from os.path import join, getsize
 from joblib import Parallel, delayed
 import numpy as np
+import torchaudio
 
 import torch
 from torch.utils.data import Dataset
@@ -43,16 +44,22 @@ class LibriDataset(Dataset):
         # Process wavefiles to features
         self.features = None
         self.aug_features = None
+        self.waves = None
         list_of_features = []
         list_of_feat_lens = []
         list_of_aug_features = []
         list_of_aug_feat_lens = []
         file_list = []
 
-        if not callable(wave_to_feat):
+        if not in_memory:
             for s in split:
                 file_list += list(Path(join(path, s)).rglob("*.flac"))
-        else:
+        elif in_memory == 'wave':
+            for s in split:
+                file_list += list(Path(join(path, s)).rglob("*.flac"))
+            self.waves, _ = zip(*mp_progress_map(torchaudio.load, ((f,)
+                                                                   for f in file_list), READ_FILE_THREADS))
+        elif in_memory == True or in_memory == 'mmap':
             def pt_path_to_np_array(path): return torch.load(path).numpy()
             mmap_mode = 'r' if in_memory == 'mmap' else None
             for s in split:
@@ -99,6 +106,8 @@ class LibriDataset(Dataset):
                     list_of_aug_feat_lens.append(aug_feat_lens)
 
                 file_list += files
+        else:
+            raise NotImplementedError
 
             self.features = torch.cat(list_of_features, dim=0) \
                 if len(list_of_features) > 1 else list_of_features[0]
@@ -146,7 +155,10 @@ class LibriDataset(Dataset):
             aug_feat_intvls = [(aug_feat_ptr[idx], aug_feat_ptr[idx+1])
                                for idx in indices]
 
-        if self.features is None:
+        if self.waves is not None:
+            self.waves = [self.waves[idx] for idx in indices]
+            self.get_feat = lambda idx: self.waves[idx]
+        elif self.features is None:
             self.get_feat = lambda idx: self.file_list[idx]
         elif self.aug_features is None:
             self.get_feat = lambda idx: (

@@ -7,6 +7,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence,pad_packed_sequence
+from src.util import get_mask_from_sequence_lengths
 
 Nonlinearities = {  # type: ignore
         "linear": lambda: lambda x: x,
@@ -36,6 +37,35 @@ BATCH_NORM = {
     "2d": batch_norm_2d_factory,
     "1d": seq_batch_norm_factory
 }
+
+
+def get_ds_ratio_factory(module):
+    padding = module.padding[0] \
+        if isinstance(module.padding, tuple) \
+        else module.padding
+
+    dilation = module.dilation[0] \
+        if isinstance(module.dilation, tuple) \
+        else module.dilation
+
+    kernel_size = module.kernel_size[0] \
+        if isinstance(module.kernel_size, tuple) \
+        else module.kernel_size
+
+    stride = module.stride[0] \
+        if isinstance(module.stride, tuple) \
+        else module.stride
+    def get_ds_ratio(lengths):
+        lengths = torch.floor(
+            torch.clamp(
+                (lengths.float() + 2 * padding - dilation *
+                    (kernel_size - 1) - 1) / stride + 1,
+                1.
+            )
+        ).long()
+        return lengths
+
+    return get_ds_ratio
 
 
 class LengthAwareWrapper(nn.Module):
@@ -824,6 +854,108 @@ class VGGExtractor(nn.Module):
 
         flattened_features = flatten(feature)
         return flattened_features, feat_len, layer_counter + idx
+
+
+class FC_block(nn.Module):
+    def __init__(self, input_size, output_size, bias=True, activation=None, dropout_rate=None):
+        super(FC_block, self).__init__()
+        self.m = nn.Linear(input_size, output_size, bias)
+        self.act = activation
+        self.dropout = nn.Dropout(dropout_rate) if dropout_rate is not None else None
+
+    def forward(self, x):
+        h = self.m(x)
+        if self.act:
+            h = self.act(h)
+        if self.dropout:
+            h = self.dropout(h)
+        return h
+
+
+class ResBlock(nn.Module):
+    def __init__(self, in_channels=[256, 256], out_channels=[256, 256], kernel_size=[5, 1], activation=nn.ReLU()):
+        super(ResBlock, self).__init__()
+        self.cn1 = Conv1dNorm(in_channels[0], out_channels[0], kernel_size[0], stride=1, padding=None)
+        self.activation = activation
+        self.cn2 = Conv1dNorm(in_channels[1], out_channels[1], kernel_size[1], stride=1, padding=None)
+    def forward(self, x, lengths=None):
+        y1, lengths = self.cn1(x, lengths)
+        y1 = self.activation(y1)
+        y2, lengths = self.cn2(y1, lengths)
+        y2 = self.activation(y2)
+        return y1 + y2, lengths
+
+
+class Conv1dNorm(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=1, stride=1,
+                 padding=None, dilation=1, bias=True, w_init_gain='linear', bn=True):
+        super(Conv1dNorm, self).__init__()
+        if padding is None:
+            assert(kernel_size % 2 == 1)
+            padding = int(dilation * (kernel_size - 1) / 2)
+
+        self.conv = torch.nn.Conv1d(in_channels, out_channels,
+                                    kernel_size=kernel_size, stride=stride,
+                                    padding=padding, dilation=dilation,
+                                    bias=bias)
+
+        nn.init.xavier_uniform_(
+            self.conv.weight, gain=nn.init.calculate_gain(w_init_gain))
+        self.get_ds_ratio = get_ds_ratio_factory(self.conv)
+        self.bn = None
+        if bn:
+            self.bn = nn.BatchNorm1d(out_channels)
+
+    def forward(self, x, xlen=None):
+        y = self.conv(x)
+        if xlen is not None:
+            xlen = self.get_ds_ratio(xlen)
+            mask = get_mask_from_sequence_lengths(xlen, max(xlen))
+            mask = mask.unsqueeze(1).expand_as(y)
+            y = y.masked_fill(~mask, 0.0)
+        if self.bn:
+            y = self.bn(y)
+        return y, xlen
+
+
+class ResCNN(nn.Module):
+    #in_dim : feature dim
+    #out_dim: ctc output token dim
+    def __init__(self, in_dim, num_layers, kernel_size, activation='ReLU', dropout_rate=0):
+        super(ResCNN, self).__init__()
+        self.feature_extractors =  nn.ModuleList([
+            Conv1dNorm(in_dim, 256, kernel_size, stride=2, padding=None),
+            Conv1dNorm(256, 256, kernel_size, stride=2, padding=None)
+        ])
+
+        self.blocks = nn.ModuleList([
+            ResBlock(activation=getattr(nn, activation)())
+            for _ in range(num_layers)])
+        size_in = [256, 512, 512] ; size_out = [512, 512, 512]
+        self.fc_layers = nn.ModuleList(
+                [FC_block(si, so, activation=getattr(nn, activation)(), dropout_rate=dropout_rate) \
+                        for si, so in zip(size_in, size_out)])
+
+        self.out_dim = 512
+
+    def forward(self, x, xlen=None):
+        """
+        Args:
+            x: tensor with shape (batch_size, timesteps, input_size)
+            input_length: the length of elements in x before padding
+        Return:
+            tensor with shape (batch_size, timesteps, output_size)
+        """
+        B, T, in_dim = x.shape
+        y = x.permute(0, 2, 1)
+        for extractor in self.feature_extractors:
+            y, xlen = extractor(y, xlen)
+        for block in self.blocks :
+            y, xlen = block(y, xlen)
+        y = y.permute(0 , 2, 1)
+        for fc in self.fc_layers :
+            y = fc(y)
+        return y, xlen
 
 
 class CNN(nn.Module):
