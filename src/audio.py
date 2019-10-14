@@ -206,12 +206,12 @@ class AudioProcessor(nn.Module):
         """
         if isinstance(wav_path, str):
             waveform, sr = torchaudio.load(wav_path)
+            assert self.sr == sr, "Sample rate mismatch. Expected %d but get %d" \
+                % (self.sr, sr)
         elif isinstance(wav_path, torch.Tensor):
             waveform = wav_path
         else:
             raise NotImplementedError
-        assert self.sr == sr, "Sample rate mismatch. Expected %d but get %d" \
-            % (self.sr, sr)
         return waveform
 
     def extract_feature_from_file(self, wav_path, preemphasis=True, channel=0):
@@ -442,7 +442,7 @@ class AudioConverter(AudioProcessor):
             for noise_type, (_snr_range, n_files_range) in noise['genre'].items():
                 files = list(self.noise_root.joinpath(noise_type).rglob("*.wav"))
                 if in_memory == 'wave':
-                    files = mp_progress_map(self.load, ((f,) for f in files), 6)
+                    files, _ = zip(*mp_progress_map(torchaudio.load, ((f,) for f in files), 6))
                 noise_source = NoiseSource(files, _snr_range, n_files_range)
                 self.noise_sources[noise_type] = noise_source
         self.snr_range = snr_range
@@ -480,9 +480,11 @@ class AudioConverter(AudioProcessor):
     def wave_to_feat(self, file):
         # -- old -- #
         # sp, msp = self.extract_feature_from_waveform(wave)
-        if isinstance(file, Path):
+        if isinstance(file, Path) or isinstance(file, str):
             file = str(file)
-        wave = self.load(file)
+            wave = self.load(file)
+        elif isinstance(file, torch.Tensor):
+            wave = file
 
         _sp, _msp = self.extract_feature_from_waveform(wave)
         # _mfcc = self.extract_mfcc_from_file(file)
@@ -524,9 +526,9 @@ class AudioConverter(AudioProcessor):
                     noise_type = random.choice(list(self.noise_sources.keys()))
                     noise_files, snr_range, n_files_range = self.noise_sources[noise_type]
                     n_files = random.randint(*n_files_range)
-                    noise_files = random.sample(noise_files, n_files)
+                    sampled_files = random.sample(noise_files, n_files)
                     noises = []
-                    for noise_file in noise_files:
+                    for noise_file in sampled_files:
                         noise = self.load(noise_file)
                         noises.append(noise)
 

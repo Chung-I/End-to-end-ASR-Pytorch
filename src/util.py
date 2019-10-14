@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import math
 import time
 from tqdm import tqdm
-import multiprocessing as mp
+import torch.multiprocessing as mp
 
 from numpy.lib.format import open_memmap
 import torch
