@@ -204,7 +204,7 @@ class AudioProcessor(nn.Module):
         Return:
             waveform of shape (samples)
         """
-        if isinstance(wav_path, str):
+        if isinstance(wav_path, str) or isinstance(wav_path, Path):
             waveform, sr = torchaudio.load(wav_path)
         elif isinstance(wav_path, torch.Tensor):
             waveform = wav_path
@@ -442,7 +442,7 @@ class AudioConverter(AudioProcessor):
             for noise_type, (_snr_range, n_files_range) in noise['genre'].items():
                 files = list(self.noise_root.joinpath(noise_type).rglob("*.wav"))
                 if in_memory == 'wave':
-                    files = mp_progress_map(self.load, ((f,) for f in files), 6)
+                    files, _ = zip(*mp_progress_map(torchaudio.load, ((f,) for f in files), 6))
                 noise_source = NoiseSource(files, _snr_range, n_files_range)
                 self.noise_sources[noise_type] = noise_source
         self.snr_range = snr_range
