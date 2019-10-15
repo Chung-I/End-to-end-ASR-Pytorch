@@ -347,9 +347,8 @@ class Encoder(nn.Module):
                                             sample_rate[l], sample_style, proj[l]))
                 input_dim = module_list[-1].out_dim
                 self.sample_rate = self.sample_rate*sample_rate[l]
-        else:
-            #raise NotImplementedError
-            pass
+        elif module != 'none':
+            raise NotImplementedError
 
         self.in_dim = input_size
         self.out_dim = input_dim
