@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import matplotlib.pyplot as plt
 import math
+import yaml
 import time
 import itertools
 from tqdm import tqdm
@@ -376,3 +377,12 @@ def load_clone(wavfile):
     wave_clone = deepcopy(waveform)
     del waveform
     return wave_clone
+
+def load_config(config_file):
+    if Path(config_file).suffix == '.toml':
+        import toml
+        config = toml.load(config_file)
+    else:
+        config = yaml.load(open(config_file, 'r'), Loader=yaml.FullLoader)
+
+    return config

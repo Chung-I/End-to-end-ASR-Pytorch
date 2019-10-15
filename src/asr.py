@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 
-from src.util import init_weights, init_gate
+from src.util import init_weights, init_gate, load_config
 from src.module import VGGExtractor, CNN, ResCNN, RNNLayer, ScaleDotAttention, LocationAwareAttention
 from src.audio import Delta
 
@@ -334,6 +334,10 @@ class Encoder(nn.Module):
         elif cnn_type == 'res':
             cnn_encoder = ResCNN(input_size, **cnn)
             self.sample_rate = self.sample_rate*4
+        elif cnn_type == 'jasper':
+            from src.jasper import JasperEncoder
+            model_config = load_config(cnn.get('config', 'jasper10x5dr.toml'))
+            cnn_encoder = JasperEncoder(**model_config)
         elif cnn_type != 'none':
             raise NotImplementedError
         if cnn_encoder is not None:

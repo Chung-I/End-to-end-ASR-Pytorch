@@ -6,7 +6,7 @@ data:
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 
     batch_size: 12
-    in_memory: 'wave'
+    in_memory: False
   audio:
     num_freq: 1025
     num_mels: 80
@@ -50,10 +50,13 @@ hparas:                                   # Experiment hyper-parameters
   
 model:                                    # Model architecture
   ctc_weight: 1.0                         # Weight for CTC loss
-  delta: 2
+  delta: 0
   encoder:
     cnn:
-      type: 'none'
+      type: 'jasper'
+      config: 'config/jasper5x3.toml'
+      num_layers: 5
+      kernel_size: 5
       # nonlinearity: 'relu'
       # batch_norm:
       #   type: '1d'
@@ -61,7 +64,7 @@ model:                                    # Model architecture
       # num_layers: 2
       # hidden_channel: 32
       # nonlinearity: relu
-    module: 'LSTM'                        # 'LSTM'/'GRU'/'Transformer'
+    module: 'none'                        # 'LSTM'/'GRU'/'Transformer'
     bidirection: True
     dim: [320,320,320,320,320]
     dropout: [0,0,0,0,0]
