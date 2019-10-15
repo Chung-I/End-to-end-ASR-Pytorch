@@ -40,9 +40,12 @@ hparas:                                   # Experiment hyper-parameters
   grad_clip: 'inf'
   optimizer:
     type: 'Adam'
-    lr: 0.0001
+    lr: 0.001
   lr_scheduler:
-    type: 'fixed'                   # 'fixed'/'warmup'/'decay'/'reduce_lr_on_plateau'/'manual'
+    type: 'manual'                   # 'fixed'/'warmup'/'decay'/'reduce_lr_on_plateau'/'manual'
+    step_stage: [0.25, 0.4, 0.5, 0.75, 0.8, 1.0] # below is for lr manual
+    gamma: [1.0, 0.1, 0.01, 1.0, 0.1, 0.01]
+    warmup_step: 1000.0 
   freq_loss_type: 'l1'                         # 'l1'/'mse'
   differential_loss: False
   emphasize_linear_low: False
@@ -78,12 +81,13 @@ id_net:
     type: 'netvlad'
     loss_fn: "softmax"
     time_dim: 256
-    spkr_dim: 128
+    spkr_dim: 256
     resnet_config:
-      planes: [24, 48, 64, 128, 256]
-        #planes: [48, 96, 128, 256, 512]
+        #planes: [24, 48, 64, 128, 256]
+      planes: [48, 96, 128, 256, 512]
     netvlad_config:
       num_clusters: 8
+      alpha: 0.25
 tts:
   # type: 'highway'
   layer_num: -2

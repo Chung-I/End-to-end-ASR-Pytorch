@@ -225,7 +225,7 @@ class ThinResNet(nn.Module):
         self.netvlad = NetVLAD(dim=self.resnet.out_dim, **netvlad_config)
         self.time_dim = time_dim
         #vlad_dim = (time_dim + 31) // 32 * self.resnet.out_dim
-        vlad_dim = time_dim // 32 * self.resnet.out_dim
+        vlad_dim = self.netvlad.num_clusters * self.resnet.out_dim
         self.fc = nn.Linear(vlad_dim, spkr_dim)
         self.prediction_layer = nn.Linear(spkr_dim, speaker_num, bias=False)
         self.loss_fn = loss_fn

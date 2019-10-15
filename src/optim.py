@@ -1,6 +1,18 @@
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import numpy as np
+from functools import partial
+
+
+def lr_manual(step, init_lr, step_stage=[0.5, 1.0], gamma=[1.0, 0.1], warmup_step=None):
+    max_step = 240000.0
+    if warmup_step is not None and step < warmup_step:
+        lr = init_lr * warmup_step ** 0.5 * np.minimum((step+1)*warmup_step**-1.5, (step+1)**-0.5)
+        return lr
+    for s in range(len(step_stage)):
+        if step < max_step * step_stage[s]:
+            lr = init_lr * gamma[s]
+            return lr
 
 
 class Optimizer():
@@ -33,6 +45,9 @@ class Optimizer():
         elif lr_scheduler['type'] == 'reduce_lr_on_plateau':
             lr_scheduler.pop('type')
             self.lr_scheduler = ReduceLROnPlateau(self.opt, **lr_scheduler)
+        elif lr_scheduler['type'] == 'manual':
+            lr_scheduler.pop('type')
+            self.lr_scheduler = partial(lr_manual, init_lr=init_lr, **lr_scheduler)
         else:
             self.lr_scheduler = None
 
