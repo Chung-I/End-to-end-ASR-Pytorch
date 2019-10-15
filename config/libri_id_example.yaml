@@ -6,7 +6,7 @@ data:
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: False                       # Enable/Disable bucketing 
     batch_size: 128
-    in_memory: "wave"
+    in_memory: "mmap" # 'mmap'/'wave'
     preload: "onthefly" # 'preload'(True)/'onthefly'/False
   audio:
     num_freq: 1025
@@ -40,7 +40,7 @@ hparas:                                   # Experiment hyper-parameters
   grad_clip: 'inf'
   optimizer:
     type: 'Adam'
-    lr: 0.001
+    lr: 0.0001
   lr_scheduler:
     type: 'fixed'                   # 'fixed'/'warmup'/'decay'/'reduce_lr_on_plateau'/'manual'
   freq_loss_type: 'l1'                         # 'l1'/'mse'
@@ -78,9 +78,10 @@ id_net:
     type: 'netvlad'
     loss_fn: "softmax"
     time_dim: 256
-    spkr_dim: 256
+    spkr_dim: 128
     resnet_config:
-      planes: [48, 96, 128, 256, 512]
+      planes: [24, 48, 64, 128, 256]
+        #planes: [48, 96, 128, 256, 512]
     netvlad_config:
       num_clusters: 8
 tts:

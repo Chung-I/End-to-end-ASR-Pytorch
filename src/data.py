@@ -1,4 +1,5 @@
 import torch
+from pathlib import Path
 from functools import partial
 from src.text import load_text_encoder
 from src.audio import load_audio_transform
@@ -12,28 +13,49 @@ HALF_BATCHSIZE_AUDIO_LEN = 800
 HALF_BATCHSIZE_TEXT_LEN = 150
 
 
-def collect_audio_batch(batch, audio_transform, mode, task):
+def collect_audio_batch(batch, audio_transform, mode, task, in_memory=False):
     '''Collects a batch, should be list of tuples (audio_path <str>, list of int token <list>)
        e.g. [(file1,txt1,id1),(file2,txt2,id2),...] '''
 
     # Bucketed batch should be [[(file1,txt1,id1),(file2,txt2,id2),...]]
     if type(batch[0]) is not tuple:
         batch = batch[0]
+
     # Make sure that batch size is reasonable
-    first_feat = audio_transform(batch[0][0])
+    if isinstance(batch[0][0], Path) or (isinstance(batch[0][0], torch.Tensor) and in_memory == 'wave'):
+        first_feat, _ = audio_transform(batch[0][0])
+    else:
+        first_feat = batch[0][0]
     first_len = first_feat[0].shape[0]
 
     # if first_len > HALF_BATCHSIZE_AUDIO_LEN and mode == 'train':
     #    batch = batch[:len(batch)//2]
 
     # Read batch
-    file, audio_feat, audio_len, text, spkr_id = [], [], [], [], []
+    file, audio_feat, audio_len, text, spkr_id, dataset_idx, to_save = [], [], [], [], [], [], []
     with torch.no_grad():
         for b in batch:
-            feat = audio_transform(b[0])
+            if isinstance(b[0], Path):
+                feat, wave = audio_transform(b[0])
+                if in_memory == 'wave':
+                    to_save.append(wave)
+                    dataset_idx.append(b[3])
+                elif in_memory == 'mmap' or in_memory == True:
+                    to_save.append(feat)
+                    dataset_idx.append(b[3])
+            elif isinstance(b[0], torch.Tensor) and in_memory == 'wave':
+                feat, _ = audio_transform(b[0])
+            elif isinstance(b[0][0], torch.Tensor) and (in_memory == 'mmap' or in_memory == True):
+                feat = b[0]
+
             # feat may be (mel_sp) or (mel_sp, mel_sp_augmented)
             for f in feat:
-                file.append(str(b[0]).split('/')[-1].split('.')[0])
+                # Only if 'in_memory' == False, b[0] is file path
+                if isinstance(b[0], Path):
+                    file.append(str(b[0]).split('/')[-1].split('.')[0])
+                else:
+                    file.append("0")
+                # file.append(str(b[0]).split('/')[-1].split('.')[0])
                 audio_feat.append(f)
                 audio_len.append(len(f))
                 text.append(torch.LongTensor(b[1]))
@@ -51,7 +73,7 @@ def collect_audio_batch(batch, audio_transform, mode, task):
     audio_len = torch.LongTensor(audio_len)
     spkr_id = torch.tensor(spkr_id)
 
-    return file, audio_feat, audio_len, text, spkr_id
+    return file, audio_feat, audio_len, text, (spkr_id, dataset_idx, to_save)
 
 
 def collect_text_batch(batch, mode):
@@ -92,7 +114,7 @@ def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
             not ascending) else 1  # Ascending without bucketing
         # Do not use bucketing for dev set
         dv_set = Dataset(path, dev_split, tokenizer, 1,
-                         wave_to_feat=wave_to_feat, in_memory=in_memory, preload=preload)
+                         wave_to_feat=wave_to_feat, in_memory=False, preload=False)
         tr_set = Dataset(path, train_split, tokenizer, bucket_size, ascending=ascending,
                          wave_to_feat=wave_to_feat, in_memory=in_memory, preload=preload)
         # Messages to show
@@ -157,8 +179,9 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, ta
     corpus['preload'] = preload
     corpus['in_memory'] = in_memory
     wave_to_feat = audio_converter.wave_to_feat if in_memory else None
-    collate_fn_wave_to_feat = (
-        lambda x: x) if in_memory == 'mmap' or in_memory == True else audio_converter.wave_to_feat
+    collate_fn_wave_to_feat = audio_converter.wave_to_feat
+    # collate_fn_wave_to_feat = (
+    #    lambda x: x) if in_memory == 'mmap' or in_memory == True else audio_converter.wave_to_feat
     # Dataset (in testing mode, tr_set=dv_set, dv_set=tt_set)
     tr_set, dv_set, tr_loader_bs, dv_loader_bs, mode, data_msg = create_dataset(
         tokenizer, ascending, **corpus, wave_to_feat=wave_to_feat)
@@ -167,14 +190,14 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, ta
     spkr_id_list = tr_set.spkr_id_list
     # Collect function
     collect_tr = partial(
-        collect_audio_batch, audio_transform=collate_fn_wave_to_feat, mode=mode, task=task)
+        collect_audio_batch, audio_transform=collate_fn_wave_to_feat, mode=mode, task=task, in_memory=in_memory)
     collect_dv = partial(
         collect_audio_batch, audio_transform=collate_fn_wave_to_feat, mode='test', task=task)
     # Shuffle/drop applied to training set only
     shuffle = (mode == 'train' and not ascending)
     drop_last = shuffle
     # Create data loader
-    tr_set = DataLoader(tr_set, batch_size=tr_loader_bs, shuffle=shuffle, drop_last=drop_last, collate_fn=collect_tr,
+    tr_set = DataLoader(tr_set, batch_size=tr_loader_bs, shuffle=shuffle, drop_last=False, collate_fn=collect_tr,
                         num_workers=n_jobs, pin_memory=use_gpu)
     dv_set = DataLoader(dv_set, batch_size=dv_loader_bs, shuffle=False, drop_last=False, collate_fn=collect_dv,
                         num_workers=n_jobs, pin_memory=pin_memory)

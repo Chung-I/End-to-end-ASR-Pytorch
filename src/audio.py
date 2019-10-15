@@ -24,7 +24,9 @@ REF_LEVEL_DB = 20
 MFCC_HOP_LEN_MS = 10
 MFCC_WIN_LEN_MS = 25
 N_MFCC_NO_DELTA = 13
-NoiseSource = namedtuple('NoiseSource', ['files', 'snr_range', 'n_files_range'])
+NoiseSource = namedtuple(
+    'NoiseSource', ['files', 'snr_range', 'n_files_range'])
+
 
 class CMVN(torch.jit.ScriptModule):
 
@@ -440,9 +442,11 @@ class AudioConverter(AudioProcessor):
         self.noise_sources: Dict[str, NoiseSource] = {}
         if noise.get('genre') is not None:
             for noise_type, (_snr_range, n_files_range) in noise['genre'].items():
-                files = list(self.noise_root.joinpath(noise_type).rglob("*.wav"))
+                files = list(self.noise_root.joinpath(
+                    noise_type).rglob("*.wav"))
                 if in_memory == 'wave':
-                    files, _ = zip(*mp_progress_map(torchaudio.load, ((f,) for f in files), 6))
+                    files, _ = zip(
+                        *mp_progress_map(torchaudio.load, ((f,) for f in files), 6))
                 noise_source = NoiseSource(files, _snr_range, n_files_range)
                 self.noise_sources[noise_type] = noise_source
         self.snr_range = snr_range
@@ -563,9 +567,9 @@ class AudioConverter(AudioProcessor):
                 msp_aug = self._amp_to_db(msp_aug) - REF_LEVEL_DB
                 msp_aug = self._normalize(msp_aug)
                 msp_aug = msp_aug[0].T  # 1st channel
-            return (msp, msp_aug)
+            return (msp, msp_aug), wave
         else:
-            return (msp,)
+            return (msp,), wave
 
     def feat_to_wave(self, feat):
         # (D, T)

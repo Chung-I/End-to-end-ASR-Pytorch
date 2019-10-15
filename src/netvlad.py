@@ -93,7 +93,7 @@ class ResNet(nn.Module):
                                        dilate=replace_stride_with_dilation[2])
         self.maxpool2 = nn.MaxPool2d(kernel_size=(1, 3), stride=2, padding=0)
         self.fc = nn.Conv2d(
-            512, 512, kernel_size=(1, 2), stride=1, padding=0, bias=True)
+            planes[-1], planes[-1], kernel_size=(1, 2), stride=1, padding=0, bias=True)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -222,7 +222,7 @@ class ThinResNet(nn.Module):
     def __init__(self, speaker_num, time_dim, loss_fn, spkr_dim, resnet_config, netvlad_config):
         super(ThinResNet, self).__init__()
         self.resnet = ResNet(**resnet_config)
-        self.netvlad = NetVLAD(**netvlad_config)
+        self.netvlad = NetVLAD(dim=self.resnet.out_dim, **netvlad_config)
         self.time_dim = time_dim
         #vlad_dim = (time_dim + 31) // 32 * self.resnet.out_dim
         vlad_dim = time_dim // 32 * self.resnet.out_dim

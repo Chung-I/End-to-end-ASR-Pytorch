@@ -9,6 +9,7 @@ import torchaudio
 
 import torch
 from torch.utils.data import Dataset
+from copy import deepcopy
 
 from src.util import mp_progress_map, wave_to_feat_and_save_factory, write_sliced_array
 
@@ -53,6 +54,7 @@ class LibriDataset(Dataset):
         self.features = None
         self.aug_features = None
         self.waves = None
+        self.wave_to_feat = wave_to_feat
         list_of_features = []
         list_of_feat_lens = []
         list_of_aug_features = []
@@ -159,28 +161,49 @@ class LibriDataset(Dataset):
                          key=lambda idx: len(text.__getitem__(idx)))
         self.file_list = [file_list[idx] for idx in indices]
         self.text = [text[idx] for idx in indices]
-        if self.features is not None:
-            feat_intvls = [(feat_ptr[idx], feat_ptr[idx+1]) for idx in indices]
+        # if self.features is not None:
+        #    feat_intvls = [(feat_ptr[idx], feat_ptr[idx+1]) for idx in indices]
         if self.aug_features is not None:
             aug_feat_intvls = [(aug_feat_ptr[idx], aug_feat_ptr[idx+1])
                                for idx in indices]
         if self.waves is not None:
             self.waves = [self.waves[idx] for idx in indices]
 
-        if preload == 'onthefly' and in_memory == 'wave':
-            self.waves = [None] * len(indices)
+        # self.waves = dict() if in_memory == 'wave' and preload == 'onthefly' else None
+        # self.features = dict() if (in_memory == 'mmap' or in_memory ==
+        #                           True) and preload == 'onthefly' else None
+        self.waves = [None] * len(indices) if in_memory == 'wave' else None
+        self.features = [
+            None] * len(indices) if in_memory == 'mmap' or in_memory == True else None
+
+    def set_feat(self, idx, feat):
+        if self.waves is not None and self.waves[idx] is None:
+            self.waves[idx] = feat
+        elif self.features is not None and self.features[idx] is None:
+            self.features[idx] = feat
 
     def get_feat(self, idx):
         if self.waves is not None:
             if self.waves[idx] is None:
-                waveform, _ = torchaudio.load(self.file_list[idx])
-                self.waves[idx] = waveform
+                return self.file_list[idx]
+                #waveform, _ = torchaudio.load(self.file_list[idx])
+                # return waveform
             return self.waves[idx]
-            #self.waves = [self.waves[idx] for idx in indices]
-            #self.get_feat = lambda idx: self.waves[idx]
+            # self.waves = [self.waves[idx] for idx in indices]
+            # self.get_feat = lambda idx: self.waves[idx]
+        elif self.features is not None:
+            if self.features[idx] is None:
+                return self.file_list[idx]
+                if '.flac' in self.file_list[idx].name:
+                    feat, _ = self.wave_to_feat(self.file_list[idx])
+                else:
+                    raise NotImplementedError
+                return feat
+            return self.features[idx]
         elif self.features is None:
             return self.file_list[idx]
-            #self.get_feat = lambda idx: self.file_list[idx]
+            # self.get_feat = lambda idx: self.file_list[idx]
+        # Code below right now is useless
         elif self.aug_features is None:
             return self.features[feat_intvls[idx][0]:feat_intvls[idx][1], ]
             # self.get_feat = lambda idx: (
@@ -192,15 +215,14 @@ class LibriDataset(Dataset):
             #                             self.aug_features[aug_feat_intvls[idx][0]:aug_feat_intvls[idx][1]])
 
     def __getitem__(self, index):
-
         if self.bucket_size > 1:
             # Return a bucket
             index = min(len(self.file_list)-self.bucket_size, index)
-            return [(self.get_feat(idx), self.text[idx], self.get_id(self.file_list[idx])) for idx in
+            return [(self.get_feat(idx), self.text[idx], self.get_id(self.file_list[idx]), idx) for idx in
                     range(index, index + self.bucket_size)]
             # zip(self.file_list[index:index+self.bucket_size], self.text[index:index+self.bucket_size])]
         else:
-            return self.get_feat(index), self.text[index], self.get_id(self.file_list[index])
+            return self.get_feat(index), self.text[index], self.get_id(self.file_list[index]), index
 
     def __len__(self):
         return len(self.file_list)

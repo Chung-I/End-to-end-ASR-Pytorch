@@ -2,6 +2,7 @@ from functools import partial
 import os
 import math
 
+from copy import deepcopy
 import numpy as np
 import torch
 import torch.nn as nn
@@ -20,7 +21,7 @@ from src.util import human_format, cal_er, feat_to_fig, freq_loss, \
 
 DEV_N_EXAMPLES = 0  # How many examples to show in tensorboard
 CKPT_STEP = 10000
-CKPT_EPOCH = 20
+CKPT_EPOCH = 10
 
 
 class Solver(BaseSolver):
@@ -36,7 +37,7 @@ class Solver(BaseSolver):
 
     def fetch_data(self, data):
         ''' Move data to device and compute text seq. length'''
-        _, feat, feat_len, txt, spkr_id = data
+        _, feat, feat_len, txt, (spkr_id, dataset_idx, to_save) = data
         if self.tts is not None and hasattr(self.tts, 'n_frames_per_step'):
             bs, timesteps, _ = feat.size()
             padded_timesteps = timesteps + self.tts.n_frames_per_step - \
@@ -50,7 +51,7 @@ class Solver(BaseSolver):
         txt_len = torch.sum(txt != 0, dim=-1)
         spkr_id = spkr_id.to(self.device)
 
-        return feat, feat_len, txt, txt_len, spkr_id
+        return feat, feat_len, txt, txt_len, (spkr_id, dataset_idx, to_save)
 
     def load_data(self):
         ''' Load data for training/validation, store tokenizer and input/output shape'''
@@ -251,8 +252,13 @@ class Solver(BaseSolver):
                 total_loss = 0
 
                 # Fetch data
-                feat, feat_len, txt, txt_len, spkr_id = self.fetch_data(data)
+                feat, feat_len, txt, txt_len, (spkr_id, dataset_idx, to_save) = self.fetch_data(
+                    data)
                 self.timer.cnt('rd')
+
+                if n_epochs == 0:
+                    for index, saved_feat in zip(dataset_idx, to_save):
+                        self.tr_set.dataset.set_feat(index, saved_feat)
 
                 # Forward model
                 # Note: txt should NOT start w/ <sos>
@@ -319,6 +325,8 @@ class Solver(BaseSolver):
                     self.progress('Tr stat | Loss - {:.2f} | Grad. Norm - {:.4f} | {}'
                                   .format(loss, grad_norm, self.timer.show()))
                     self.write_log('loss', {'tr_id': loss})
+                    self.write_log('lr', {'lr': self.optimizer.cur_lr})
+                    self.write_log('grad_norm', {'grad_norm': grad_norm})
                     # self.write_log('cmatrix', [cm_figure(
                     #     true_history, pred_history, self.spkr_id_list)])
                     loss_history.clear()
@@ -379,7 +387,8 @@ class Solver(BaseSolver):
         for i, data in enumerate(self.dv_set):
             self.progress('Valid step - {}/{}'.format(i+1, len(self.dv_set)))
             # Fetch data
-            feat, feat_len, txt, txt_len, spkr_id = self.fetch_data(data)
+            feat, feat_len, txt, txt_len, (spkr_id,
+                                           _, _) = self.fetch_data(data)
             dev_spkr_id += spkr_id.cpu().tolist()
 
             # Forward model
