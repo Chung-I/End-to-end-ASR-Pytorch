@@ -133,7 +133,7 @@ class Solver(BaseSolver):
 
                 # Forward model
                 with torch.no_grad():
-                    spkr_embedding, _ = self.id_net(feat)
+                    spkr_embedding, _ = self.id_net(feat, feat_len, False)
                     dev_spkr_emb += spkr_embedding.cpu().tolist()
 
                 torch.cuda.empty_cache()

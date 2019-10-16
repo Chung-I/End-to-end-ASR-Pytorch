@@ -230,13 +230,16 @@ class ThinResNet(nn.Module):
         self.prediction_layer = nn.Linear(spkr_dim, speaker_num, bias=False)
         self.loss_fn = loss_fn
 
-    def forward(self, x, hidden_len):
+    def forward(self, x, hidden_len, rand_cut=True):
         x_cut = x[:, :self.time_dim, :]
         # Cut input feature to fixed size(self.time_dim)
         for i, cut_end in enumerate(hidden_len):
-            rand_end = cut_end - self.time_dim
-            rand_end = rand_end if rand_end > 0 else 1
-            cut_start = np.random.random_integers(0, rand_end)
+            if rand_cut:
+                rand_end = cut_end - self.time_dim
+                rand_end = rand_end if rand_end > 0 else 1
+                cut_start = np.random.random_integers(0, rand_end)
+            else:
+                cut_start = 0
             x_cut[i] = x[i, cut_start:cut_start+self.time_dim]
         extracted_feature = self.resnet(x_cut)
         vlad = self.netvlad(extracted_feature)
