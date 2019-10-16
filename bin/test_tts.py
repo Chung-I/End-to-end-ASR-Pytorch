@@ -8,6 +8,7 @@ from itertools import chain
 import torch
 import torch.nn as nn
 from src.solver import BaseSolver
+import torchaudio
 
 from src.asr import ASR
 from src.tts import FeedForwardTTS, HighwayTTS, Tacotron, Tacotron2
@@ -127,29 +128,34 @@ class Solver(BaseSolver):
         self.asr.eval() # behavior of generating spectrogram should be in eval mode
         self.tts.eval()
 
-        for data in tqdm(chain(self.tr_set, self.dv_set)):
+        for data in tqdm(self.dv_set):
             # Fetch data
-            f_name, feat, feat_len, txt, txt_len = self.fetch_data(data)
+            f_names, feats, feat_lens, _, _ = self.fetch_data(data)
             # Forward model
             # Note: txt should NOT start w/ <sos>
             with torch.no_grad():
-                deltas = self.asr.apply_delta_acceleration(feat)
+                deltas = self.asr.apply_delta_acceleration(feats)
                 hidden_outs, hidden_len, _ = self.asr.encoder.get_hidden_states(
-                    deltas, feat_len, self.layer_num)
+                    deltas, feat_lens, self.layer_num)
 
-                feat_pred, _, _ = self.tts(
-                    hidden_outs, hidden_len, feat, tf_rate=0.0)
-                feat_pred_len = feat_pred.size(-2)
+                feat_preds, _, _ = self.tts(
+                    hidden_outs, hidden_len, feats, tf_rate=0.0)
+                feat_pred_len = feat_preds.size(-2)
                 if not isinstance(self.tts, Tacotron2):
-                    feat_pred = feat_pred.unsqueeze(1)
-                mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len)\
-                    .unsqueeze(1).unsqueeze(-1).expand_as(feat_pred).bool()
-                feat_pred = feat_pred.masked_fill(~mask, 0.0)
+                    feat_preds = feat_preds.unsqueeze(1)
+                mask = get_mask_from_sequence_lengths(feat_lens, feat_pred_len)\
+                    .unsqueeze(1).unsqueeze(-1).expand_as(feat_preds).bool()
+                feat_preds = feat_preds.masked_fill(~mask, 0.0)
 
                 channel = 1 if isinstance(self.tts, Tacotron2) else 0
-                feat_pred = feat_pred[:, channel]
-
-                self.save_feat(feat_pred, f_name, feat_len, '.pt')
+                feat_preds = feat_preds[:, channel].cpu()
+                for feat_pred, f_name in zip(feat_preds, f_names):
+                    wav_pred, sr = self.audio_converter.feat_to_wave(feat_pred)
+                    wav_pred = torch.from_numpy(wav_pred).view(1, -1)
+                    self.save_feat([wav_pred], [f_name], [wav_pred.shape[1]], '.flac',
+                        save_func=lambda feat, length, path: torchaudio.save(str(path), feat, sr))
+                self.save_feat(feat_preds, f_names, feat_lens, '.pt',
+                               lambda feat, length, path: torch.save(feat[:length], path))
 
     def validate(self):
         # Eval mode
@@ -175,8 +181,10 @@ class Solver(BaseSolver):
                 feat_pred = feat_pred.masked_fill(~mask, 0.0)
                 self.save_feat(feat_pred, f_name)
 
-    def save_feat(self, feats, out_names, feat_lens=None, suffix='.pt'):
-        for feat, feat_len, out_name in zip(feats, feat_lens.tolist(), out_names):
+    def save_feat(self, feats, out_names, feat_lens=None, suffix='.pt', save_func=torch.save):
+        if isinstance(feat_lens, torch.Tensor):
+            feat_lens = feat_lens.tolist()
+        for feat, feat_len, out_name in zip(feats, feat_lens, out_names):
             out_full_path = self.out_path.joinpath(Path(out_name).relative_to(self.path).with_suffix(suffix))
             out_full_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(feat[:feat_len].cpu(), out_full_path)
+            save_func(feat, feat_len, out_full_path)
