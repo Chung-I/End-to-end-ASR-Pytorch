@@ -33,7 +33,7 @@ class Solver(BaseSolver):
         self.best_eer = 3.0
         self.best_tts_loss = float('inf')
         # Curriculum learning affects data loader
-        self.curriculum = self.config['hparas']['curriculum']
+        self.curriculum = self.src_config['hparas']['curriculum']
 
     def fetch_data(self, data):
         ''' Move data to device and compute text seq. length'''
@@ -48,10 +48,9 @@ class Solver(BaseSolver):
 
     def load_data(self):
         ''' Load data for training/validation, store tokenizer and input/output shape'''
-        self.config['data']['corpus'].pop('train_split')
-        self.config['data']['corpus']['test_split'] = ['test_clean']
+        self.src_config['data'].pop('corpus')
         self.tr_set, self.dv_set, self.tokenizer, self.audio_converter, msg, (self.spkr_weight, self.spkr_id_list) = load_dataset(
-            self.paras.njobs, self.paras.gpu, self.paras.pin_memory, self.curriculum > 0, **self.config['data'])
+            self.paras.njobs, self.paras.gpu, self.paras.pin_memory, self.curriculum > 0, **self.config['data'], **self.src_config['data'])
         self.vocab_size = self.tokenizer.vocab_size
         self.feat_dim, _ = self.audio_converter.feat_dim                  # ignore linear dim
         self.spkr_num = len(self.spkr_weight)
@@ -63,24 +62,17 @@ class Solver(BaseSolver):
         # Model
         id_in_dim = 80
 
-        if self.config['id_net']['type'] == "netvlad":
-            self.config['id_net'].pop('type')
+        if self.src_config['id_net']['type'] == "netvlad":
+            self.src_config['id_net'].pop('type')
             self.id_net = ThinResNet(
-                self.spkr_num, **self.config['id_net']).to(self.device)
+                self.spkr_num, **self.src_config['id_net']).to(self.device)
         else:
-            self.config['id_net'].pop('type')
+            self.src_config['id_net'].pop('type')
             self.id_net = RNNSimple(
-                id_in_dim, self.spkr_num, **self.config['id_net']).to(self.device)
+                id_in_dim, self.spkr_num, **self.src_config['id_net']).to(self.device)
 
         # self.verbose(self.asr.create_msg())
         model_paras = [{'params': self.id_net.parameters()}]
-
-        # Optimizer
-        self.optimizer = Optimizer(model_paras, **self.config['hparas'])
-        self.verbose(self.optimizer.create_msg())
-
-        # Enable AMP if needed
-        self.enable_apex()
 
         # Automatically load pre-trained model if self.paras.load is given
         self.load_ckpt_dir()

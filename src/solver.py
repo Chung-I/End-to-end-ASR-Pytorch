@@ -4,6 +4,7 @@ import abc
 import math
 import yaml
 import torch
+from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 
 from src.option import default_hparas
@@ -63,17 +64,26 @@ class BaseSolver():
             self.verbose('Loading data... large corpus may took a while.')
 
         elif mode == 'test':
-            # Output path
-            os.makedirs(paras.outdir, exist_ok=True)
-            self.ckpdir = os.path.join(paras.outdir, self.exp_name)
+            # Logger settings
+            self.logdir = os.path.join(paras.logdir, self.exp_name)
+            self.log = SummaryWriter(
+                self.logdir, flush_secs=self.TB_FLUSH_FREQ)
+            self.timer = Timer()
+
+            # Hyperparameters
+            self.step = 0
+            self.valid_step = config['hparas']['valid_step']
+            self.max_step = config['hparas']['max_step']
+
+            self.verbose('Exp. name : {}'.format(self.exp_name))
+            self.verbose('Loading data... large corpus may took a while.')
 
             # Load training config to get acoustic feat, text encoder and build model
-            self.src_config = yaml.load(
-                open(config['src']['config'], 'r'), Loader=yaml.FullLoader)
-            self.paras.load = config['src']['ckpt']
+            src_config = str(list(Path(paras.load).rglob("*.yaml"))[0])
+            self.src_config = yaml.load(src_config, Loader=yaml.FullLoader)
+            self.paras.load = paras.load
 
-            self.verbose('Evaluating result of tr. config @ {}'.format(
-                config['src']['config']))
+            self.verbose('Evaluating result of tr. config @ {}'.format(src_config))
 
     def backward(self, loss):
         '''

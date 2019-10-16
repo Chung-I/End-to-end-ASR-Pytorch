@@ -1,0 +1,18 @@
+data:
+  corpus:                                 
+    name: 'Librispeech'                   # Specify corpus
+    path: 'save/LibriSpeech'          # Path to raw LibriSpeech dataset
+    dev_split: ['dev-clean']              # Name of data splits to be used as validation set
+    test_split: ['test-clean']              # Name of data splits to be used as testing set
+    bucketing: False                       # Enable/Disable bucketing 
+    batch_size: 128
+    in_memory: "mmap" # 'mmap'/'wave'
+    preload: "onthefly" # 'preload'(True)/'onthefly'/False
+
+hparas:                                   # Experiment hyper-parameters
+  valid_step: 240000
+  curriculum: 0
+  max_step: 240001
+  tf_start: 1.0
+  tf_end: 1.0
+  tf_step: 500000
