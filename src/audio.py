@@ -353,7 +353,7 @@ class AudioProcessor(nn.Module):
         """
         phases = np.angle(np.exp(2j * np.pi * np.random.rand(*specgram.shape)))
         phases = phases.astype(np.float32)
-        phases = torch.from_numpy(phases)
+        phases = torch.from_numpy(phases).to(specgram.device)
         magnitude = specgram.abs()
         # Spectrum with random phases
         y = self._to_complex(magnitude, phases)
