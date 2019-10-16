@@ -85,12 +85,11 @@ elif paras.id:
 else:
     if paras.test:
         # Test ASR
-        assert paras.load is None, 'Load option is mutually exclusive to --test'
-        from bin.test_asr import Solver
+        from bin.test_id import Solver
         mode = 'test'
     else:
         # Train ASR
-        from bin.train_asr import Solver
+        from bin.train_id import Solver
         mode = 'train'
 
 
