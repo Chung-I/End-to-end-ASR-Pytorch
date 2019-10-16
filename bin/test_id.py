@@ -48,7 +48,9 @@ class Solver(BaseSolver):
 
     def load_data(self):
         ''' Load data for training/validation, store tokenizer and input/output shape'''
-        _, self.dv_set, self.tokenizer, self.audio_converter, msg, (self.spkr_weight, self.spkr_id_list) = load_dataset(
+        self.config['data']['corpus'].pop('train_split')
+        self.config['data']['corpus']['test_split'] = ['test_clean']
+        self.tr_set, self.dv_set, self.tokenizer, self.audio_converter, msg, (self.spkr_weight, self.spkr_id_list) = load_dataset(
             self.paras.njobs, self.paras.gpu, self.paras.pin_memory, self.curriculum > 0, **self.config['data'])
         self.vocab_size = self.tokenizer.vocab_size
         self.feat_dim, _ = self.audio_converter.feat_dim                  # ignore linear dim

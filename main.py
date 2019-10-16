@@ -80,17 +80,16 @@ elif paras.tts:
     from bin.train_tts import Solver
     mode = 'train'
 elif paras.id:
-    from bin.train_id import Solver
-    mode = 'train'
-else:
     if paras.test:
-        # Test ASR
         from bin.test_id import Solver
         mode = 'test'
     else:
-        # Train ASR
         from bin.train_id import Solver
         mode = 'train'
+else:
+    # Train ASR
+    from bin.train_id import Solver
+    mode = 'train'
 
 
 solver = Solver(config, paras, mode)

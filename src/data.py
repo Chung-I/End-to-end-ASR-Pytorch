@@ -127,10 +127,10 @@ def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
         mode = 'test'
         # Do not use bucketing for dev set
         dv_set = Dataset(path, dev_split, tokenizer, 1,
-                         wave_to_feat=wave_to_feat, in_memory=in_memory)
+                         wave_to_feat=wave_to_feat, in_memory=in_memory, preload=preload)
         # Do not use bucketing for test set
         tt_set = Dataset(path, test_split, tokenizer, 1,
-                         wave_to_feat=wave_to_feat, in_memory=in_memory)
+                         wave_to_feat=wave_to_feat, in_memory=in_memory, preload=preload)
         # Messages to show
         msg_list = _data_msg(name, path, dev_split.__str__(), dv_set,
                              test_split.__str__(), tt_set, batch_size, False)
@@ -192,7 +192,7 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, ta
     collect_tr = partial(
         collect_audio_batch, audio_transform=collate_fn_wave_to_feat, mode=mode, task=task, in_memory=in_memory)
     collect_dv = partial(
-        collect_audio_batch, audio_transform=collate_fn_wave_to_feat, mode='test', task=task)
+        collect_audio_batch, audio_transform=collate_fn_wave_to_feat, mode='test', task=task, in_memory=in_memory)
     # Shuffle/drop applied to training set only
     shuffle = (mode == 'train' and not ascending)
     drop_last = shuffle
