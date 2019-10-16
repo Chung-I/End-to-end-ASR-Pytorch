@@ -3,6 +3,7 @@ import os
 import math
 from pathlib import Path
 from tqdm import tqdm
+from itertools import chain
 
 import torch
 import torch.nn as nn
@@ -122,10 +123,13 @@ class Solver(BaseSolver):
         self.tr_set, _, _, _, _, _ = \
         load_dataset(self.paras.njobs, self.paras.gpu, self.paras.pin_memory,
                      False, **self.config['data'], task='tts')
-        for data in tqdm(self.tr_set):
+
+        self.asr.eval() # behavior of generating spectrogram should be in eval mode
+        self.tts.eval()
+
+        for data in tqdm(chain(self.tr_set, self.dv_set)):
             # Fetch data
             f_name, feat, feat_len, txt, txt_len = self.fetch_data(data)
-
             # Forward model
             # Note: txt should NOT start w/ <sos>
             with torch.no_grad():
@@ -141,23 +145,18 @@ class Solver(BaseSolver):
                 mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len)\
                     .unsqueeze(1).unsqueeze(-1).expand_as(feat_pred).bool()
                 feat_pred = feat_pred.masked_fill(~mask, 0.0)
-                self.save_feat(feat_pred, feat_len, f_name)
 
-            #torch.cuda.empty_cache()
+                channel = 1 if isinstance(self.tts, Tacotron2) else 0
+                feat_pred = feat_pred[:, channel]
 
-        self.validate()
-        self.log.close()
+                self.save_feat(feat_pred, f_name, feat_len, '.pt')
 
     def validate(self):
         # Eval mode
         self.asr.eval()
         self.tts.eval()
-        dev_tts_loss = []
-        att_output = None
-        ctc_output = None
 
-        for i, data in enumerate(self.dv_set):
-            self.progress('Valid step - {}/{}'.format(i+1, len(self.dv_set)))
+        for data in tqdm(self.dv_set):
             # Fetch data
             f_name, feat, feat_len, txt, txt_len = self.fetch_data(data)
 
@@ -176,10 +175,8 @@ class Solver(BaseSolver):
                 feat_pred = feat_pred.masked_fill(~mask, 0.0)
                 self.save_feat(feat_pred, f_name)
 
-    def save_feat(self, feats, feat_lens, out_names):
-        channel = 1 if isinstance(self.tts, Tacotron2) else 0
-        feats = feats[:, channel]
+    def save_feat(self, feats, out_names, feat_lens=None, suffix='.pt'):
         for feat, feat_len, out_name in zip(feats, feat_lens.tolist(), out_names):
-            out_full_path = self.out_path.joinpath(Path(out_name).relative_to(self.path).with_suffix('.pt'))
+            out_full_path = self.out_path.joinpath(Path(out_name).relative_to(self.path).with_suffix(suffix))
             out_full_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save(feat[:feat_len].cpu(), out_full_path)
