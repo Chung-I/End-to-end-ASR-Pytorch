@@ -39,16 +39,16 @@ class Solver(BaseSolver):
         ''' Move data to device and compute text seq. length'''
         _, feat, feat_len, txt, (spkr_id, dataset_idx, to_save) = data
         cut_feat = feat.new_empty(
-            feat[:, :self.id_net.time_dim].shape)
+            feat[:, :self.time_dim].shape)
         for i, cut_end in enumerate(feat_len):
             if rand_cut:
-                rand_end = cut_end - self.id_net.time_dim
+                rand_end = cut_end - self.time_dim
                 rand_end = rand_end if rand_end > 0 else 1
                 cut_start = np.random.random_integers(0, rand_end)
             else:
                 cut_start = 0
             cut_feat[i] = deepcopy(
-                feat[i, cut_start:cut_start+self.id_net.time_dim])
+                feat[i, cut_start:cut_start+self.time_dim])
         feat = cut_feat.to(self.device)
         feat_len = feat_len.to(self.device)
         txt = txt.to(self.device)
@@ -106,10 +106,11 @@ class Solver(BaseSolver):
                 self.tts = None
 
         id_in_dim = self.feat_dim if self.tts is not None else id_in_dim
+        self.time_dim = self.config['id_net']['time_dim']
         if self.config['id_net']['type'] == "netvlad":
             self.config['id_net'].pop('type')
-            self.id_net = ThinResNet(
-                self.spkr_num, **self.config['id_net']).to(self.device)
+            self.id_net = nn.DataParallel(ThinResNet(
+                self.spkr_num, **self.config['id_net'])).to(self.device)
         else:
             self.config['id_net'].pop('type')
             self.id_net = RNNSimple(
@@ -290,11 +291,13 @@ class Solver(BaseSolver):
                 id_in_feat = hidden_outs if self.tts is None else feat_pred
                 spkr_embedding, spkr_pred = self.id_net(
                     id_in_feat, hidden_len, False)
+                '''
                 if self.id_net.loss_fn == 'amsoftmax':
                     margin = 0.35
                     scale = 30
                     spkr_pred[np.arange(len(spkr_id)), spkr_id] -= margin
                     spkr_pred *= scale
+                '''
                 total_loss = F.cross_entropy(
                     spkr_pred, spkr_id, weight=self.spkr_weight)
 
