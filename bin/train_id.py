@@ -35,17 +35,21 @@ class Solver(BaseSolver):
         # Curriculum learning affects data loader
         self.curriculum = self.config['hparas']['curriculum']
 
-    def fetch_data(self, data):
+    def fetch_data(self, data, rand_cut=True):
         ''' Move data to device and compute text seq. length'''
         _, feat, feat_len, txt, (spkr_id, dataset_idx, to_save) = data
-        if self.tts is not None and hasattr(self.tts, 'n_frames_per_step'):
-            bs, timesteps, _ = feat.size()
-            padded_timesteps = timesteps + self.tts.n_frames_per_step - \
-                (timesteps % self.tts.n_frames_per_step)
-            padded_feat = feat.new_zeros((bs, padded_timesteps, self.feat_dim))
-            padded_feat[:, :timesteps, :] = feat
-            feat = padded_feat
-        feat = feat.to(self.device)
+        cut_feat = feat.new_empty(
+            feat[:, :self.id_net.time_dim].shape)
+        for i, cut_end in enumerate(feat_len):
+            if rand_cut:
+                rand_end = cut_end - self.id_net.time_dim
+                rand_end = rand_end if rand_end > 0 else 1
+                cut_start = np.random.random_integers(0, rand_end)
+            else:
+                cut_start = 0
+            cut_feat[i] = deepcopy(
+                feat[i, cut_start:cut_start+self.id_net.time_dim])
+        feat = cut_feat.to(self.device)
         feat_len = feat_len.to(self.device)
         txt = txt.to(self.device)
         txt_len = torch.sum(txt != 0, dim=-1)
@@ -284,7 +288,8 @@ class Solver(BaseSolver):
                                     feat_pred, feat[..., :feat_pred_len, :])
 
                 id_in_feat = hidden_outs if self.tts is None else feat_pred
-                spkr_embedding, spkr_pred = self.id_net(id_in_feat, hidden_len)
+                spkr_embedding, spkr_pred = self.id_net(
+                    id_in_feat, hidden_len, False)
                 if self.id_net.loss_fn == 'amsoftmax':
                     margin = 0.35
                     scale = 30
