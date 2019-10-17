@@ -51,7 +51,7 @@ class Solver(BaseSolver):
                 feat[i, cut_start:cut_start+self.time_dim])
         feat = cut_feat.to(self.device)
         feat_len = feat_len.to(self.device)
-        txt = txt.to(self.device)
+        txt = txt
         txt_len = torch.sum(txt != 0, dim=-1)
         spkr_id = spkr_id.to(self.device)
 
@@ -425,7 +425,7 @@ class Solver(BaseSolver):
 
                     # Show some example on tensorboard
                     # pick n longest samples in the median batch
-                    sample_txt = txt.cpu()[:DEV_N_EXAMPLES]
+                    sample_txt = txt[:DEV_N_EXAMPLES]
                     sample_mel = feat.cpu()[:DEV_N_EXAMPLES]
                     if ctc_output is not None:
                         ctc_hyps = ctc_output.argmax(
