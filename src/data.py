@@ -22,7 +22,14 @@ def collect_audio_batch(batch, audio_transform, mode, task, in_memory=False):
         batch = batch[0]
 
     # Make sure that batch size is reasonable
-    if isinstance(batch[0][0], Path) or (isinstance(batch[0][0], torch.Tensor) and in_memory == 'wave'):
+    if isinstance(batch[0][0], Path):
+        if '.flac' in str(batch[0][0]):
+            first_feat, _ = audio_transform(batch[0][0])
+        elif '.pt' in str(batch[0][0]):
+            first_feat = (torch.load(batch[0][0]), )
+        else:
+            raise NotImplementedError
+    elif isinstance(batch[0][0], torch.Tensor) and in_memory == 'wave':
         first_feat, _ = audio_transform(batch[0][0])
     else:
         first_feat = batch[0][0]
@@ -36,7 +43,11 @@ def collect_audio_batch(batch, audio_transform, mode, task, in_memory=False):
     with torch.no_grad():
         for b in batch:
             if isinstance(b[0], Path):
-                feat, wave = audio_transform(b[0])
+                if '.flac' in str(b[0]):
+                    feat, wave = audio_transform(b[0])
+                elif '.pt' in str(b[0]):
+                    feat = (torch.load(b[0]), )
+
                 if in_memory == 'wave':
                     to_save.append(wave)
                     dataset_idx.append(b[3])

@@ -80,7 +80,7 @@ class BaseSolver():
 
             # Load training config to get acoustic feat, text encoder and build model
             src_config = str(list(Path(paras.load).rglob("*.yaml"))[0])
-            self.src_config = yaml.load(src_config, Loader=yaml.FullLoader)
+            self.src_config = yaml.load(open(src_config, 'r'), Loader=yaml.FullLoader)
             self.paras.load = paras.load
 
             self.verbose('Evaluating result of tr. config @ {}'.format(src_config))

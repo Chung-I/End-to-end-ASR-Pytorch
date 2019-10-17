@@ -64,6 +64,8 @@ class LibriDataset(Dataset):
         if not in_memory or preload == 'onthefly':
             for s in split:
                 file_list += list(Path(join(path, s)).rglob("*.flac"))
+                if len(file_list) == 0:
+                    file_lise += list(Path(join(path, s)).rglob("*.pt"))
         elif in_memory == 'wave' and (preload == 'preload' or preload == True):
             for s in split:
                 file_list += list(Path(join(path, s)).rglob("*.flac"))
