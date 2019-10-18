@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import matplotlib.pyplot as plt
 import math
+import yaml
 import time
 import itertools
 from tqdm import tqdm
@@ -123,7 +124,7 @@ def human_format(num):
     return '{:3.1f}{}'.format(num, [' ', 'K', 'M', 'G', 'T', 'P'][magnitude])
 
 
-def cal_er(tokenizer, pred, truth, mode='wer', ctc=False):
+def cal_er(tokenizer, pred, truth, mode='wer', ctc=False, return_list=False):
     # Calculate error rate of a batch
     if pred is None:
         return np.nan
@@ -137,7 +138,10 @@ def cal_er(tokenizer, pred, truth, mode='wer', ctc=False):
             p = p.split(' ')
             t = t.split(' ')
         er.append(float(ed.eval(p, t))/len(t))
-    return sum(er)/len(er)
+    if return_list:
+        return er
+    else:
+        return sum(er)/len(er)
 
 
 def load_embedding(text_encoder, embedding_filepath):
@@ -376,3 +380,12 @@ def load_clone(wavfile):
     wave_clone = deepcopy(waveform)
     del waveform
     return wave_clone
+
+def load_config(config_file):
+    if Path(config_file).suffix == '.toml':
+        import toml
+        config = toml.load(config_file)
+    else:
+        config = yaml.load(open(config_file, 'r'), Loader=yaml.FullLoader)
+
+    return config

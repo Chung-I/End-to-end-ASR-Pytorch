@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 
-from src.util import init_weights, init_gate
+from src.util import init_weights, init_gate, load_config
 from src.module import VGGExtractor, CNN, ResCNN, RNNLayer, ScaleDotAttention, LocationAwareAttention
 from src.audio import Delta
 
@@ -72,7 +72,7 @@ class ASR(nn.Module):
         return msg
 
     def forward(self, audio_feature, feature_len, decode_step, tf_rate=0.0, teacher=None, 
-                      emb_decoder=None, get_dec_state=False):
+                      emb_decoder=None, get_dec_state=False, log_prob=True):
         '''
         Arguments
             audio_feature - [BxTxD] Acoustic feature with shape 
@@ -96,7 +96,9 @@ class ASR(nn.Module):
 
         # CTC based decoding
         if self.enable_ctc:
-            ctc_output = F.log_softmax(self.ctc_layer(encode_feature),dim=-1)
+            ctc_output = self.ctc_layer(encode_feature)
+            if log_prob:
+                ctc_output = F.log_softmax(ctc_output,dim=-1)
 
         # Attention based decoding
         if self.enable_att:
@@ -334,6 +336,10 @@ class Encoder(nn.Module):
         elif cnn_type == 'res':
             cnn_encoder = ResCNN(input_size, **cnn)
             self.sample_rate = self.sample_rate*4
+        elif cnn_type == 'jasper':
+            from src.jasper import JasperEncoder
+            model_config = load_config(cnn.get('config', 'jasper10x5dr.toml'))
+            cnn_encoder = JasperEncoder(**model_config)
         elif cnn_type != 'none':
             raise NotImplementedError
         if cnn_encoder is not None:
@@ -347,9 +353,8 @@ class Encoder(nn.Module):
                                             sample_rate[l], sample_style, proj[l]))
                 input_dim = module_list[-1].out_dim
                 self.sample_rate = self.sample_rate*sample_rate[l]
-        else:
-            #raise NotImplementedError
-            pass
+        elif module != 'none':
+            raise NotImplementedError
 
         self.in_dim = input_size
         self.out_dim = input_dim

@@ -7,7 +7,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from src.option import default_hparas
-from src.util import human_format, Timer
+from src.util import human_format, Timer, load_config
 
 class BaseSolver():
     ''' 
@@ -63,7 +63,8 @@ class BaseSolver():
             self.ckpdir = os.path.join(paras.outdir,self.exp_name)
 
             # Load training config to get acoustic feat, text encoder and build model
-            self.src_config = yaml.load(open(config['src']['config'],'r'), Loader=yaml.FullLoader)
+
+            self.src_config = load_config(config['src']['config'])
             self.paras.load = config['src']['ckpt']
 
             self.verbose('Evaluating result of tr. config @ {}'.format(config['src']['config'])) 

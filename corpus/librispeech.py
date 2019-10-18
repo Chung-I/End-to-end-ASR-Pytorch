@@ -171,11 +171,10 @@ class LibriDataset(Dataset):
         if self.bucket_size > 1:
             # Return a bucket
             index = min(len(self.file_list)-self.bucket_size, index)
-            return [(self.get_feat(idx), self.text[idx], self.get_id(self.file_list[idx])) for idx in
-                    range(index, index + self.bucket_size)]
-            # zip(self.file_list[index:index+self.bucket_size], self.text[index:index+self.bucket_size])]
+            return [(self.get_feat(idx), self.text[idx], self.get_id(self.file_list[idx]), self.file_list[idx])
+                for idx in range(index, index + self.bucket_size)]
         else:
-            return self.get_feat(index), self.text[index], self.get_id(self.file_list[index])
+            return self.get_feat(index), self.text[index], self.get_id(self.file_list[index]), self.file_list[index]
 
     def __len__(self):
         return len(self.file_list)

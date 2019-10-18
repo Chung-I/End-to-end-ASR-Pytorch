@@ -873,11 +873,12 @@ class FC_block(nn.Module):
 
 
 class ResBlock(nn.Module):
-    def __init__(self, in_channels=[256, 256], out_channels=[256, 256], kernel_size=[5, 1], activation=nn.ReLU()):
+    def __init__(self, in_channels=[256, 256], out_channels=[256, 256], kernel_size=[5, 1],
+                 activation=nn.ReLU(), bn=True):
         super(ResBlock, self).__init__()
-        self.cn1 = Conv1dNorm(in_channels[0], out_channels[0], kernel_size[0], stride=1, padding=None)
+        self.cn1 = Conv1dNorm(in_channels[0], out_channels[0], kernel_size[0], stride=1, padding=None, bn=bn)
         self.activation = activation
-        self.cn2 = Conv1dNorm(in_channels[1], out_channels[1], kernel_size[1], stride=1, padding=None)
+        self.cn2 = Conv1dNorm(in_channels[1], out_channels[1], kernel_size[1], stride=1, padding=None, bn=bn)
     def forward(self, x, lengths=None):
         y1, lengths = self.cn1(x, lengths)
         y1 = self.activation(y1)
@@ -903,8 +904,11 @@ class Conv1dNorm(nn.Module):
             self.conv.weight, gain=nn.init.calculate_gain(w_init_gain))
         self.get_ds_ratio = get_ds_ratio_factory(self.conv)
         self.bn = None
-        if bn:
+        if isinstance(bn, dict):
+            self.bn = nn.BatchNorm1d(out_channels, **bn)
+        elif bn is True:
             self.bn = nn.BatchNorm1d(out_channels)
+        print("bn {}".format(self.bn))
 
     def forward(self, x, xlen=None):
         y = self.conv(x)
@@ -921,15 +925,15 @@ class Conv1dNorm(nn.Module):
 class ResCNN(nn.Module):
     #in_dim : feature dim
     #out_dim: ctc output token dim
-    def __init__(self, in_dim, num_layers, kernel_size, activation='ReLU', dropout_rate=0):
+    def __init__(self, in_dim, num_layers, kernel_size, activation='ReLU', dropout_rate=0, bn=True):
         super(ResCNN, self).__init__()
         self.feature_extractors =  nn.ModuleList([
-            Conv1dNorm(in_dim, 256, kernel_size, stride=2, padding=None),
-            Conv1dNorm(256, 256, kernel_size, stride=2, padding=None)
+            Conv1dNorm(in_dim, 256, kernel_size, stride=2, padding=None, bn=bn),
+            Conv1dNorm(256, 256, kernel_size, stride=2, padding=None, bn=bn)
         ])
 
         self.blocks = nn.ModuleList([
-            ResBlock(activation=getattr(nn, activation)())
+            ResBlock(activation=getattr(nn, activation)(), bn=bn)
             for _ in range(num_layers)])
         size_in = [256, 512, 512] ; size_out = [512, 512, 512]
         self.fc_layers = nn.ModuleList(

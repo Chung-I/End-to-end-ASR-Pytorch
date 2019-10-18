@@ -2,8 +2,9 @@ data:
   corpus:                                 
     name: 'Librispeech'                   # Specify corpus
     path: 'save/LibriSpeech'          # Path to raw LibriSpeech dataset
-    train_split: ['train-clean-100']      # Name of data splits to be used as training set
+    test_path: 'save/aug_10dB'          # Path to raw LibriSpeech dataset
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
+    test_split: ['test-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 
     batch_size: 12
     in_memory: False
@@ -16,12 +17,6 @@ data:
     sample_rate: 16000
     use_linear: False                      ### Return Linear spectrogram
     # augmentation
-    noise:
-      path: 'save/musan'
-      genre:
-        music: [[5, 15], [1,1]]
-        noise: [[0, 15], [1,1]]
-        speech: [[13, 20], [3,7]]
     snr_range: [-1]
     time_stretch_range: [1.0, 1.0]
     inverse_prob: 0.0
@@ -29,49 +24,20 @@ data:
     mode: 'subword'                       # 'character'/'word'/'subword'
     vocab_file: 'tests/sample_data/subword.model'
 
-hparas:                                   # Experiment hyper-parameters
-  valid_step: 5000
-  curriculum: 0
-  max_step: 350001
-  tf_start: 1.0
-  tf_end: 0.0
-  tf_step: 500000
-  grad_clip: 5.0
-  optimizer:
-    type: 'SGD'
-    lr: 0.01
-    nesterov: True
-    momentum: 0.9
-  lr_scheduler:
-    type: 'reduce_lr_on_plateau'                   # 'fixed'/'warmup'/'decay'/'reduce_lr_on_plateau'
-    factor: 0.5
-    patience: 4
-  reduce_lr_on_plateau_by: 'ctc'
-  
 model:                                    # Model architecture
+  delta: 2
   ctc_weight: 1.0                         # Weight for CTC loss
-  delta: 0
   encoder:
-    cnn:
-      type: 'jasper'
-      config: 'config/jasper5x3.toml'
-      num_layers: 5
-      kernel_size: 5
-      # nonlinearity: 'relu'
-      # batch_norm:
-      #   type: '1d'
-      #   momentum: 0.99
-      # num_layers: 2
-      # hidden_channel: 32
-      # nonlinearity: relu
-    module: 'none'                        # 'LSTM'/'GRU'/'Transformer'
+    cnn:                             # 4x reduction on time feature extraction
+      type: 'vgg'
+    module: 'LSTM'                        # 'LSTM'/'GRU'/'Transformer'
     bidirection: True
     dim: [320,320,320,320,320]
     dropout: [0,0,0,0,0]
     layer_norm: [False,False,False,False,False]
     proj: [True,True,True,True,True]      # Linear projection + Tanh after each rnn layer
-    sample_rate: [1,2,2,1,1]
-    sample_style: 'concat'                  # 'drop'/'concat'
+    sample_rate: [1,1,1,1,1]
+    sample_style: 'drop'                  # 'drop'/'concat'
   attention:
     mode: 'loc'                           # 'dot'/'loc'
     dim: 300
@@ -85,4 +51,11 @@ model:                                    # Model architecture
     dim: 320
     layer: 1
     dropout: 0
-    #layer_norm: False
+hparas:
+  spec: False
+  wave: True
+tts:
+  layer_num: 9
+  num_layers: 4
+  type: 'highway'
+src: 'dummy' # to be replaced by bash script
