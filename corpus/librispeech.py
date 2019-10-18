@@ -17,7 +17,7 @@ OFFICIAL_TXT_SRC = ['librispeech-lm-norm.txt']
 # Remove longest N sentence in librispeech-lm-norm.txt
 REMOVE_TOP_N_TXT = 5000000
 # Default num. of threads used for loading LibriSpeech
-READ_FILE_THREADS = 12
+READ_FILE_THREADS = 2
 
 
 def read_text(file):
@@ -57,7 +57,8 @@ class LibriDataset(Dataset):
         elif in_memory == 'wave':
             for s in split:
                 file_list += list(Path(join(path, s)).rglob("*.flac"))
-            self.waves = mp_progress_map(load_clone, ((f,) for f in file_list), READ_FILE_THREADS)
+            #self.waves = mp_progress_map(load_clone, ((f,) for f in file_list), READ_FILE_THREADS)
+            self.waves = [wav for wav in tqdm(map(load_clone, file_list))]
         elif in_memory == True or in_memory == 'mmap':
             def pt_path_to_np_array(path): return torch.load(path).numpy()
             mmap_mode = 'r' if in_memory == 'mmap' else None
