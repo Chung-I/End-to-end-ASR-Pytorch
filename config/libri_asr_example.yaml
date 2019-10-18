@@ -53,10 +53,14 @@ model:                                    # Model architecture
   delta: 0
   encoder:
     cnn:
-      type: 'jasper'
-      config: 'config/jasper5x3.toml'
-      num_layers: 5
-      kernel_size: 5
+      type: 'res'
+      num_layers: 15
+      bn: False
+      num_layers: [9, 11, 11, 13, 13, 15, 15, 17, 17, 19, 19, 21, 21, 23, 23, 25, 25]
+      #type: 'jasper'
+      #config: 'config/jasper5x3.toml'
+      #num_layers: 5
+      #kernel_size: 5
       # nonlinearity: 'relu'
       # batch_norm:
       #   type: '1d'

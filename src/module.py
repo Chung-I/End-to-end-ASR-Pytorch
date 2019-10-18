@@ -928,7 +928,7 @@ class ResCNN(nn.Module):
     def __init__(self, in_dim, num_layers, kernel_sizes, activation='ReLU', dropout_rate=0, bn=True):
         super(ResCNN, self).__init__()
         self.feature_extractors =  nn.ModuleList([
-            Conv1dNorm(in_dim, 256, kernel_sizes[0] stride=2, padding=None, bn=bn),
+            Conv1dNorm(in_dim, 256, kernel_sizes[0], stride=2, padding=None, bn=bn),
             Conv1dNorm(256, 256, kernel_sizes[1], stride=2, padding=None, bn=bn)
         ])
 
