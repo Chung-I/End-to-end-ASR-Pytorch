@@ -10,7 +10,7 @@ sed -i "s/test_path:.*$/test_path:\ \'save\/$2\'/g" "save/$OUT_DIR/$CONFIG";
 if [[ $2 == "LibriSpeech" ]];
 then
     sed -i "s/spec:\ False/spec:\ True/g" "save/$OUT_DIR/$CONFIG";
-    sed -i "s/wave:\ True/wave:\ False/g" "save/$OUT_DIR/$CONFIG";
+    #sed -i "s/wave:\ True/wave:\ False/g" "save/$OUT_DIR/$CONFIG";
 fi
 
 sed -i "s/src:.*/src:\n\ \ config: \'log\/$1\/$SRC_CONFIG\'\n\ \ ckpt:\ \'checkpoint\/$1\/tts.pth\'/g" "save/$OUT_DIR/$CONFIG"

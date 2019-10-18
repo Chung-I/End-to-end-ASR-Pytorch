@@ -5,6 +5,7 @@ from pathlib import Path
 from tqdm import tqdm
 from itertools import chain
 import soundfile
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -130,7 +131,7 @@ class Solver(BaseSolver):
         for data in tqdm(chain(self.dv_set, self.tt_set)):
             # Fetch data
             f_names, feats, feat_lens, _, _ = self.fetch_data(data)
-            max_feat_len = feat_lens.size(-2)
+            max_feat_len = feats.size(-2)
             # Forward model
             # Note: txt should NOT start w/ <sos>
             with torch.no_grad():
@@ -143,7 +144,7 @@ class Solver(BaseSolver):
                 max_feat_pred_len = feat_preds.size(-2)
                 if not isinstance(self.tts, Tacotron2):
                     feat_preds = feat_preds.unsqueeze(1)
-                print(feat_preds.size(-2), feats.size(-2))
+                #print(feat_preds.size(-2), feats.size(-2))
                 feat_preds = F.pad(feat_preds, (0, 0, 0, max_feat_len - max_feat_pred_len))
                 mask = get_mask_from_sequence_lengths(feat_lens, max_feat_len)\
                     .unsqueeze(1).unsqueeze(-1).expand_as(feat_preds).bool()
@@ -154,9 +155,11 @@ class Solver(BaseSolver):
                     signal_lens = list(map(self.audio_converter.n_frames_to_signal_len, feat_lens.tolist()))
                     wav_preds, sr = self.audio_converter.feat_to_wave(feat_preds)
                     for wav_pred, f_name, signal_len in zip(wav_preds, f_names, signal_lens):
+                        wav_gt, _ = soundfile.read(f_name)
                         out_full_path = self.out_path.joinpath(Path(f_name).relative_to(self.path).with_suffix(".flac"))
                         out_full_path.parent.mkdir(parents=True, exist_ok=True)
-                        soundfile.write(str(out_full_path), wav_pred[:signal_len], sr)
+                        out_wav = np.concatenate((wav_pred[:signal_len], wav_gt[signal_len:]), axis=0)
+                        soundfile.write(str(out_full_path), out_wav, sr)
                 if self.config['hparas']['spec']:
                     self.save_feat(feat_preds.cpu(), f_names, feat_lens, '.pt')
 
