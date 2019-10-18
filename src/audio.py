@@ -1,6 +1,7 @@
 from typing import Dict
 from pathlib import Path
 from collections import namedtuple
+from tqdm import tqdm
 
 import torch
 import torchaudio
@@ -466,7 +467,8 @@ class AudioConverter(AudioProcessor):
                 for noise_type, (_snr_range, n_files_range) in noise['genre'].items():
                     files = list(self.noise_root.joinpath(noise_type).rglob("*.wav"))
                     if in_memory == 'wave':
-                        files = mp_progress_map(load_clone, ((f,) for f in files), 6)
+                        #files = mp_progress_map(load_clone, ((f,) for f in files), 2)
+                        files = [wav for wav in tqdm(map(load_clone, files))]
                     noise_source = NoiseSource(files, _snr_range, n_files_range)
                     self.noise_sources[noise_type] = noise_source
             self.gen_aug = noise.get('gen_aug')

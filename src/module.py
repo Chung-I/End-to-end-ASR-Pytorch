@@ -925,16 +925,16 @@ class Conv1dNorm(nn.Module):
 class ResCNN(nn.Module):
     #in_dim : feature dim
     #out_dim: ctc output token dim
-    def __init__(self, in_dim, num_layers, kernel_size, activation='ReLU', dropout_rate=0, bn=True):
+    def __init__(self, in_dim, num_layers, kernel_sizes, activation='ReLU', dropout_rate=0, bn=True):
         super(ResCNN, self).__init__()
         self.feature_extractors =  nn.ModuleList([
-            Conv1dNorm(in_dim, 256, kernel_size, stride=2, padding=None, bn=bn),
-            Conv1dNorm(256, 256, kernel_size, stride=2, padding=None, bn=bn)
+            Conv1dNorm(in_dim, 256, kernel_sizes[0] stride=2, padding=None, bn=bn),
+            Conv1dNorm(256, 256, kernel_sizes[1], stride=2, padding=None, bn=bn)
         ])
 
         self.blocks = nn.ModuleList([
-            ResBlock(activation=getattr(nn, activation)(), bn=bn)
-            for _ in range(num_layers)])
+            ResBlock(activation=getattr(nn, activation)(), kernel_size=[k, 1], bn=bn)
+            for _, k in zip(range(num_layers), kernel_sizes[2:])])
         size_in = [256, 512, 512] ; size_out = [512, 512, 512]
         self.fc_layers = nn.ModuleList(
                 [FC_block(si, so, activation=getattr(nn, activation)(), dropout_rate=dropout_rate) \

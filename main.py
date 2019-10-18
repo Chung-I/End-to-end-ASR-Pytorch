@@ -12,8 +12,8 @@ torch.backends.cudnn.benchmark = False
 
 # Workaround for "too many open files error":
 # https://github.com/pytorch/pytorch/issues/11201
-import torch.multiprocessing
-torch.multiprocessing.set_sharing_strategy('file_system')
+#import torch.multiprocessing
+#torch.multiprocessing.set_sharing_strategy('file_system')
 
 # Arguments
 parser = argparse.ArgumentParser(description='Training E2E asr.')
