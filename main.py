@@ -45,6 +45,8 @@ parser.add_argument('--lm', action='store_true',
                     help='Option for training RNNLM.')
 parser.add_argument('--tts', action='store_true',
                     help='Option for training TTS.')
+parser.add_argument('--gen-aug', action='store_true',
+                    help='Option for generating augmentation data.')
 parser.add_argument('--id', action='store_true',
                     help='Option for training speaker identification.')
 parser.add_argument('--amp', action='store_true', help='Option to enable AMP.')
@@ -83,6 +85,9 @@ elif paras.tts:
     else:
         from bin.train_tts import Solver
         mode = 'train'
+elif paras.gen_aug:
+    from bin.gen_aug import Solver
+    mode = 'test'
 elif paras.id:
     from bin.train_id import Solver
     mode = 'train'

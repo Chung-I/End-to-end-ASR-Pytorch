@@ -10,15 +10,16 @@ import torch.nn.functional as F
 import scipy.signal
 
 import pandas as pd
-from lib.filters import create_mel_filterbank
+from lib.filters import create_mel_filterbank, istft, _istft
 from lib.mfcc import create_mfcc_transform
 from src.util import mp_progress_map, load_clone
 
 import librosa
+import soundfile
 import random
 
 
-GFL_ITER = 30  # iteration of griffin lim
+GFL_ITER = 5  # iteration of griffin lim
 MIN_LEVEL_DB = -100
 REF_LEVEL_DB = 20
 MFCC_HOP_LEN_MS = 10
@@ -167,6 +168,7 @@ class AudioProcessor(nn.Module):
         self.win_length_mfcc = int(MFCC_WIN_LEN_MS / 1000 * sample_rate)
         self.window = torch.hann_window(self.win_length)
         self.preemphasis_coeff = preemphasis_coeff
+        self.center = True
         self.sr = sample_rate
         self.to_specgram = torchaudio.transforms.Spectrogram(
             n_fft=self.n_fft,
@@ -315,6 +317,14 @@ class AudioProcessor(nn.Module):
 
         return specgram[channel], melspecgram[channel]
 
+    def n_frames_to_signal_len(self, n_frames):
+        expected_signal_len = self.n_fft + self.hop_length * (n_frames - 1)
+        if self.center:
+            return expected_signal_len - self.n_fft
+        else:
+            return expected_signal_len - (self.n_fft // 2)
+
+
     def specgram_to_waveform(self, specgram, power=1.0, inv_preemphasis=True, isAmp=False):
         """
         Arg:
@@ -338,7 +348,7 @@ class AudioProcessor(nn.Module):
             approximate spectrogram: numpy array of shape (freq[spectrogram], time)
         """
         # (freq[mel], )
-        fb_pinv = torch.pinverse(self.to_melspecgram.fb).transpose(0, 1)
+        fb_pinv = torch.pinverse(self.to_melspecgram.fb).transpose(0, 1).to(melspecgram.device)
         melspecgram = self._db_to_amp(
             self._denormalize(melspecgram) + REF_LEVEL_DB)
         specgram = torch.matmul(fb_pinv, melspecgram)
@@ -378,8 +388,8 @@ class AudioProcessor(nn.Module):
             n_fft=self.n_fft,
             hop_length=self.hop_length,
             win_length=self.win_length,
-            window=self.window,
-            center=True,
+            window=self.window.to(x.device),
+            center=self.center,
             pad_mode='reflect',
             normalized=False,
             onesided=True)
@@ -387,16 +397,28 @@ class AudioProcessor(nn.Module):
 
     def _istft(self, y):
         # `x` for time-domain signal and `y` for frequency-domain signal
-        x = torchaudio.functional.istft(
-            y,
-            n_fft=self.n_fft,
-            hop_length=self.hop_length,
-            win_length=self.win_length,
-            window=self.window,
-            center=True,
-            pad_mode='reflect',
-            normalized=False,
-            onesided=True)
+        if y.ndim > 3:
+            x = _istft(
+                y,
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                win_length=self.win_length,
+                window=self.window.to(y.device),
+                center=self.center,
+                pad_mode='reflect',
+                normalized=False,
+                onesided=True)
+        else:
+            x = torchaudio.functional.istft(
+                y,
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                win_length=self.win_length,
+                window=self.window.to(y.device),
+                center=self.center,
+                pad_mode='reflect',
+                normalized=False,
+                onesided=True)
         return x
 
     def _to_complex(self, magnitude, phase):
@@ -436,15 +458,18 @@ class AudioConverter(AudioProcessor):
             num_freq, num_mels, frame_shift_ms, frame_length_ms,
             preemphasis_coeff, sample_rate)
         self.use_linear = use_linear
-        self.noise_root = Path(noise['path'])
+        self.gen_aug = None
         self.noise_sources: Dict[str, NoiseSource] = {}
-        if noise.get('genre') is not None:
-            for noise_type, (_snr_range, n_files_range) in noise['genre'].items():
-                files = list(self.noise_root.joinpath(noise_type).rglob("*.wav"))
-                if in_memory == 'wave':
-                    files = mp_progress_map(load_clone, ((f,) for f in files), 6)
-                noise_source = NoiseSource(files, _snr_range, n_files_range)
-                self.noise_sources[noise_type] = noise_source
+        if noise is not None:
+            self.noise_root = Path(noise['path'])
+            if noise.get('genre') is not None:
+                for noise_type, (_snr_range, n_files_range) in noise['genre'].items():
+                    files = list(self.noise_root.joinpath(noise_type).rglob("*.wav"))
+                    if in_memory == 'wave':
+                        files = mp_progress_map(load_clone, ((f,) for f in files), 6)
+                    noise_source = NoiseSource(files, _snr_range, n_files_range)
+                    self.noise_sources[noise_type] = noise_source
+            self.gen_aug = noise.get('gen_aug')
         self.snr_range = snr_range
         self.time_stretch_range = time_stretch_range
         self.inverse_prob = inverse_prob
@@ -492,28 +517,13 @@ class AudioConverter(AudioProcessor):
         sp = _sp.T if self.use_linear else None
         msp = _msp.T
 
-        seg_feat = None
-        if self.use_segment:
-            # Get boundary
-            file_key = str(file).split('/')[-1].split('.')[0]
-            boundary = self.boundary_table.loc[file_key]['seg']
-            # -------- Segment --------
-            if self.segment_feat == 'mfcc':
-                seg_feat = _mfcc
-            elif self.segment_feat == 'mel':
-                seg_feat = _msp
-            elif self.segment_feat == 'linear':
-                seg_feat = _sp
-            else:
-                raise NotImplementedError
-
         # Augmentation
         apply_noise = -1 not in self.snr_range
         apply_real_noise = len(self.noise_sources) > 0
-        (f"apply_real_noise: {apply_real_noise}")
         apply_time_stretch = not (
             self.time_stretch_range[0] == self.time_stretch_range[1] == 1)
-        msp_aug = msp.clone()
+
+        msp_aug = None
         if apply_noise or apply_real_noise or apply_time_stretch:
             with torch.no_grad():
                 wave_aug = wave.clone()
@@ -523,19 +533,34 @@ class AudioConverter(AudioProcessor):
                     wave_aug = self.add_noise(wave_aug, snr)
 
                 if apply_real_noise:
-                    noise_type = random.choice(list(self.noise_sources.keys()))
-                    noise_files, snr_range, n_files_range = self.noise_sources[noise_type]
-                    n_files = random.randint(*n_files_range)
-                    sampled_files = random.sample(noise_files, n_files)
-                    noises = []
-                    for noise_file in sampled_files:
-                        noise = self.load(noise_file)
-                        noises.append(noise)
+                    if self.gen_aug is not None:
+                        aug_db, aug_root = self.gen_aug
+                        aug_root = Path(aug_root)
+                        noises = []
+                        for noise_type, (noise_files, _, n_files_range) in self.noise_sources.items():
+                            n_files = random.randint(*n_files_range)
+                            sampled_files = random.sample(noise_files, n_files)
+                            for noise_file in sampled_files:
+                                noise = self.load(noise_file)
+                                noises.append(noise)
+                        wave_aug = self.add_real_noise(wave_aug, noises, aug_db)
+                        aug_file = aug_root.joinpath(Path(file).relative_to("save/LibriSpeech"))
+                        aug_file.parent.mkdir(parents=True, exist_ok=True)
+                        soundfile.write(str(aug_file), wave_aug.transpose(1, 0).numpy(), self.sr)
+                        #torchaudio.save(str(aug_file), wave_aug, self.sr)
 
-                    snr = random.uniform(*snr_range)
-                    wave_aug = self.add_real_noise(wave_aug, noises, snr)
-                    # save as wavfile for debugging
-                    # torchaudio.save(str(Path("tmp").joinpath(noise_files[0].name)), wave_aug, self.sr)
+                    else:
+                        noise_type = random.choice(list(self.noise_sources.keys()))
+                        noise_files, snr_range, n_files_range = self.noise_sources[noise_type]
+                        n_files = random.randint(*n_files_range)
+                        sampled_files = random.sample(noise_files, n_files)
+                        noises = []
+                        for noise_file in sampled_files:
+                            noise = self.load(noise_file)
+                            noises.append(noise)
+
+                        snr = random.uniform(*snr_range)
+                        wave_aug = self.add_real_noise(wave_aug, noises, snr)
 
                 # 2. Time stretch
                 if apply_time_stretch:
@@ -563,15 +588,18 @@ class AudioConverter(AudioProcessor):
                 msp_aug = self._amp_to_db(msp_aug) - REF_LEVEL_DB
                 msp_aug = self._normalize(msp_aug)
                 msp_aug = msp_aug[0].T  # 1st channel
-            return (msp, msp_aug)
+                if  self.gen_aug is not None:
+                    return (msp_aug,)
+                else:
+                    return (msp, msp_aug)
         else:
             return (msp,)
 
     def feat_to_wave(self, feat):
         # (D, T)
-        feat = feat.transpose(0, 1)
+        feat = feat.transpose(-2, -1)
         isAmp = False
-        if feat.size(0) == self.feat_dim[0]:
+        if feat.size(-2) == self.feat_dim[0]:
             # feat is melspecgram
             isAmp = True
             feat = self.melspecgram_to_specgram(feat)
@@ -635,8 +663,9 @@ def snr_coeff(snr, signal, noise):
 
 
 def load_audio_transform(num_freq, num_mels, frame_length_ms, frame_shift_ms,
-                         preemphasis_coeff, sample_rate, use_linear, noise, snr_range, time_stretch_range,
-                         inverse_prob, segment_file=None, segment_feat=None, min_segment_len=2, in_memory=False):
+                         preemphasis_coeff, sample_rate, use_linear, snr_range, time_stretch_range,
+                         inverse_prob, noise=None, segment_file=None, segment_feat=None, min_segment_len=2,
+                         in_memory=False):
     ''' Return a audio converter specified by config '''
 
     audio_converter = AudioConverter(num_freq, num_mels, frame_length_ms, frame_shift_ms,

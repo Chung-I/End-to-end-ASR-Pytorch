@@ -2,6 +2,7 @@ data:
   corpus:                                 
     name: 'Librispeech'                   # Specify corpus
     path: 'save/LibriSpeech'          # Path to raw LibriSpeech dataset
+    test_path: 'save/aug_0dB'          # Path to raw LibriSpeech dataset
     train_split: ['train-clean-100']      # Name of data splits to be used as training set
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 

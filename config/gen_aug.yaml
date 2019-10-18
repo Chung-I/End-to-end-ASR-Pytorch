@@ -2,11 +2,10 @@ data:
   corpus:                                 
     name: 'Librispeech'                   # Specify corpus
     path: 'save/LibriSpeech'          # Path to raw LibriSpeech dataset
-    test_path: 'save/aug_10dB'          # Path to raw LibriSpeech dataset
     dev_split: ['dev-clean']              # Name of data splits to be used as validation set
     test_split: ['test-clean']              # Name of data splits to be used as validation set
     bucketing: True                       # Enable/Disable bucketing 
-    batch_size: 12
+    batch_size: 24
     in_memory: False
   audio:
     num_freq: 1025
@@ -17,6 +16,16 @@ data:
     sample_rate: 16000
     use_linear: False                      ### Return Linear spectrogram
     # augmentation
+    noise:
+      path: 'save/musan'
+      gen_aug: [20, "save/aug_20dB"]
+      genre:
+        music: [[5, 15], [1,1]]
+        noise: [[0, 15], [1,1]]
+        speech: [[10, 10], [1,1]]
+    snr_range: [-1]
+    time_stretch_range: [1.0, 1.0]
+    inverse_prob: 0.0
     snr_range: [-1]
     time_stretch_range: [1.0, 1.0]
     inverse_prob: 0.0
@@ -51,9 +60,6 @@ model:                                    # Model architecture
     dim: 320
     layer: 1
     dropout: 0
-hparas:
-  spec: False
-  wave: True
 tts:
   layer_num: 9
   num_layers: 4

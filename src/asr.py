@@ -72,7 +72,7 @@ class ASR(nn.Module):
         return msg
 
     def forward(self, audio_feature, feature_len, decode_step, tf_rate=0.0, teacher=None, 
-                      emb_decoder=None, get_dec_state=False):
+                      emb_decoder=None, get_dec_state=False, log_prob=True):
         '''
         Arguments
             audio_feature - [BxTxD] Acoustic feature with shape 
@@ -96,7 +96,9 @@ class ASR(nn.Module):
 
         # CTC based decoding
         if self.enable_ctc:
-            ctc_output = F.log_softmax(self.ctc_layer(encode_feature),dim=-1)
+            ctc_output = self.ctc_layer(encode_feature)
+            if log_prob:
+                ctc_output = F.log_softmax(ctc_output,dim=-1)
 
         # Attention based decoding
         if self.enable_att:

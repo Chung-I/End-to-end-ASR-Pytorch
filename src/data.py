@@ -39,7 +39,8 @@ def collect_audio_batch(batch, audio_transform, mode, task):
                 text.append(torch.LongTensor(b[1]))
                 spkr_id.append(b[2])
                 # Testing without augmented data
-                if task == 'asr' and mode == 'test':
+                #if task == 'asr' and mode == 'test':
+                if mode == 'test':
                     break
 
     # Descending audio length within each batch
@@ -74,7 +75,7 @@ def collect_text_batch(batch, mode):
 
 def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
                    train_split=None, dev_split=None, test_split=None,
-                   wave_to_feat=None, in_memory=False):
+                   wave_to_feat=None, in_memory=False, batch_for_dev=False, test_path=None):
     ''' Interface for creating all kinds of dataset'''
 
     # Recognize corpus
@@ -91,7 +92,8 @@ def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
         bucket_size = batch_size if bucketing and (
             not ascending) else 1  # Ascending without bucketing
         # Do not use bucketing for dev set
-        dv_set = Dataset(path, dev_split, tokenizer, 1,
+        
+        dv_set = Dataset(path if test_path is None else test_path, dev_split, tokenizer, 1,
                          wave_to_feat=wave_to_feat, in_memory=in_memory)
         tr_set = Dataset(path, train_split, tokenizer,
                          bucket_size, ascending=ascending, wave_to_feat=wave_to_feat, in_memory=in_memory)
@@ -103,11 +105,12 @@ def create_dataset(tokenizer, ascending, name, path, bucketing, batch_size,
     else:
         # Testing model
         mode = 'test'
+        batch_size = batch_size if batch_for_dev else 1
         # Do not use bucketing for dev set
-        dv_set = Dataset(path, dev_split, tokenizer, 1,
+        dv_set = Dataset(path if test_path is None else test_path, dev_split, tokenizer, batch_size,
                          wave_to_feat=wave_to_feat, in_memory=in_memory)
         # Do not use bucketing for test set
-        tt_set = Dataset(path, test_split, tokenizer, 1,
+        tt_set = Dataset(path if test_path is None else test_path, test_split, tokenizer, batch_size,
                          wave_to_feat=wave_to_feat, in_memory=in_memory)
         # Messages to show
         msg_list = _data_msg(name, path, dev_split.__str__(), dv_set,
@@ -141,7 +144,7 @@ def create_textset(tokenizer, train_split, dev_split, name, path, bucketing, bat
     return tr_set, dv_set, tr_loader_bs, batch_size, msg_list
 
 
-def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, task='asr'):
+def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, task='asr', batch_for_dev=False):
     ''' Prepare dataloader for training/validation'''
 
     in_memory = corpus.pop('in_memory') if corpus.get(
@@ -158,7 +161,7 @@ def load_dataset(n_jobs, use_gpu, pin_memory, ascending, corpus, audio, text, ta
         lambda x: x) if in_memory == 'mmap' or in_memory == True else audio_converter.wave_to_feat
     # Dataset (in testing mode, tr_set=dv_set, dv_set=tt_set)
     tr_set, dv_set, tr_loader_bs, dv_loader_bs, mode, data_msg = create_dataset(
-        tokenizer, ascending, **corpus, wave_to_feat=wave_to_feat)
+        tokenizer, ascending, **corpus, wave_to_feat=wave_to_feat, batch_for_dev=batch_for_dev)
     spkr_num = tr_set.spkr_num
     spkr_weight = tr_set.spkr_weight
     spkr_id_list = tr_set.spkr_id_list

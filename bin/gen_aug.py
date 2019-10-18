@@ -4,11 +4,9 @@ import math
 from pathlib import Path
 from tqdm import tqdm
 from itertools import chain
-import soundfile
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from src.solver import BaseSolver
 import torchaudio
 
@@ -35,7 +33,7 @@ class Solver(BaseSolver):
         self.config['data']['corpus']['bucketing'] = False
 
         # The follow attribute should be identical to training config
-        # self.config['data']['audio'] = self.src_config['data']['audio']
+        #self.config['data']['audio'] = self.src_config['data']['audio']
         self.config['data']['text'] = self.src_config['data']['text']
         self.config['model'] = self.src_config['model']
         self.config['tts'] = self.src_config['tts']
@@ -60,10 +58,10 @@ class Solver(BaseSolver):
     def load_data(self):
         ''' Load data for training/validation, store tokenizer and input/output shape'''
         self.out_path = Path(os.path.join(self.paras.outdir, self.paras.name))
-        self.path = Path(self.config['data']['corpus']['test_path'])
+        self.path = Path(self.config['data']['corpus']['path'])
         self.dv_set, self.tt_set, self.tokenizer, self.audio_converter, msg, _ = \
             load_dataset(self.paras.njobs, self.paras.gpu, self.paras.pin_memory,
-                         False, **self.config['data'], task='tts', batch_for_dev=True)
+                         False, **self.config['data'], task='tts')
         self.vocab_size = self.tokenizer.vocab_size
         self.feat_dim, _ = self.audio_converter.feat_dim                  # ignore linear dim
         self.verbose(msg)
@@ -129,65 +127,5 @@ class Solver(BaseSolver):
 
         for data in tqdm(chain(self.dv_set, self.tt_set)):
             # Fetch data
-            f_names, feats, feat_lens, _, _ = self.fetch_data(data)
-            max_feat_len = feat_lens.size(-2)
-            # Forward model
-            # Note: txt should NOT start w/ <sos>
-            with torch.no_grad():
-                deltas = self.asr.apply_delta_acceleration(feats)
-                hidden_outs, hidden_len, _ = self.asr.encoder.get_hidden_states(
-                    deltas, feat_lens, self.layer_num)
+            continue
 
-                feat_preds, _, _ = self.tts(
-                    hidden_outs, hidden_len, feats, tf_rate=0.0)
-                max_feat_pred_len = feat_preds.size(-2)
-                if not isinstance(self.tts, Tacotron2):
-                    feat_preds = feat_preds.unsqueeze(1)
-                print(feat_preds.size(-2), feats.size(-2))
-                feat_preds = F.pad(feat_preds, (0, 0, 0, max_feat_len - max_feat_pred_len))
-                mask = get_mask_from_sequence_lengths(feat_lens, max_feat_len)\
-                    .unsqueeze(1).unsqueeze(-1).expand_as(feat_preds).bool()
-                feat_preds = feat_preds.masked_fill(~mask, 0.0)
-                channel = 1 if isinstance(self.tts, Tacotron2) else 0
-                feat_preds = feat_preds[:, channel]
-                if self.config['hparas']['wave']:
-                    signal_lens = list(map(self.audio_converter.n_frames_to_signal_len, feat_lens.tolist()))
-                    wav_preds, sr = self.audio_converter.feat_to_wave(feat_preds)
-                    for wav_pred, f_name, signal_len in zip(wav_preds, f_names, signal_lens):
-                        out_full_path = self.out_path.joinpath(Path(f_name).relative_to(self.path).with_suffix(".flac"))
-                        out_full_path.parent.mkdir(parents=True, exist_ok=True)
-                        soundfile.write(str(out_full_path), wav_pred[:signal_len], sr)
-                if self.config['hparas']['spec']:
-                    self.save_feat(feat_preds.cpu(), f_names, feat_lens, '.pt')
-
-    # def validate(self):
-    #     # Eval mode
-    #     self.asr.eval()
-    #     self.tts.eval()
-
-    #     for data in tqdm(self.dv_set):
-    #         # Fetch data
-    #         f_name, feat, feat_len, txt, txt_len = self.fetch_data(data)
-
-    #         # Forward model
-    #         with torch.no_grad():
-    #             deltas = self.asr.apply_delta_acceleration(feat)
-    #             hidden_outs, hidden_len, _ = self.asr.encoder.get_hidden_states(
-    #                 deltas, feat_len, self.layer_num)
-    #             feat_pred, align, _ = self.tts(
-    #                 hidden_outs, hidden_len, feat.size(1), tf_rate=0.0)
-    #             feat_pred_len = feat_pred.size(-2)
-    #             if not isinstance(self.tts, Tacotron2):
-    #                 feat_pred = feat_pred.unsqueeze(1)
-    #             mask = get_mask_from_sequence_lengths(feat_len, feat_pred_len)\
-    #                 .unsqueeze(1).unsqueeze(-1).expand_as(feat_pred).bool()
-    #             feat_pred = feat_pred.masked_fill(~mask, 0.0)
-    #             self.save_feat(feat_pred, f_name)
-
-    def save_feat(self, feats, out_names, feat_lens=None, suffix='.pt'):
-        if isinstance(feat_lens, torch.Tensor):
-            feat_lens = feat_lens.tolist()
-        for feat, feat_len, out_name in zip(feats, feat_lens, out_names):
-            out_full_path = self.out_path.joinpath(Path(out_name).relative_to(self.path).with_suffix(suffix))
-            out_full_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(feat[:feat_len].clone(),out_full_path)
